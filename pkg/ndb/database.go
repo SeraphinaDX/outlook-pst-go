@@ -111,7 +111,63 @@ func OpenWithMode(filename string, mode OpenMode) (*Database, error) {
 		nextBID:    util.BlockID(header.BidNextB),
 	}
 
+	if mode == OpenModeReadWrite {
+		if err := db.initializeNextNID(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("failed to initialize node ID allocator: %w", err)
+		}
+	}
+
 	return db, nil
+}
+
+// initializeNextNID resumes node-ID allocation above every NID already
+// present in the NBT. A reopened writer must not restart at nidIndex 1 or it
+// will eventually reuse an existing message/folder NID.
+func (db *Database) initializeNextNID() error {
+	if err := db.loadNBTRoot(); err != nil {
+		return err
+	}
+
+	maxIndex, err := db.maxNIDIndex(db.nbtRoot)
+	if err != nil {
+		return err
+	}
+	db.nextNID = maxIndex
+	return nil
+}
+
+func (db *Database) maxNIDIndex(page *disk.BTPage) (uint32, error) {
+	if page.IsLeaf() {
+		var maxIndex uint32
+		for _, entry := range page.NBTEntries {
+			index := util.NodeID(entry.NID).Index()
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+		return maxIndex, nil
+	}
+
+	var maxIndex uint32
+	for _, entry := range page.NonleafEntries {
+		data, err := db.readPage(entry.Ref.IB)
+		if err != nil {
+			return 0, err
+		}
+		child, err := disk.ParseBTPage(data, db.header.Format, disk.PageTypeNBT)
+		if err != nil {
+			return 0, err
+		}
+		childMax, err := db.maxNIDIndex(child)
+		if err != nil {
+			return 0, err
+		}
+		if childMax > maxIndex {
+			maxIndex = childMax
+		}
+	}
+	return maxIndex, nil
 }
 
 // Close closes the database.
