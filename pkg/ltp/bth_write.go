@@ -226,7 +226,10 @@ func (w *BTHWriter) buildIntermediateLevel(childHIDs []util.HeapID, maxKeys [][]
 		header[0] = 0xB5
 		header[1] = w.keySize
 		header[2] = w.dataSize
-		header[3] = byte(level) //nolint:gosec // G115: BTH level bounded by tree depth
+		// level describes the level we would build above childHIDs. With a
+		// single child no additional index node is needed, so the child is
+		// one level closer to the leaves than that prospective level.
+		header[3] = byte(level - 1) //nolint:gosec // level starts at 1
 		binary.LittleEndian.PutUint32(header[4:8], uint32(childHIDs[0]))
 
 		headerHID, err := w.heap.Allocate(header)
