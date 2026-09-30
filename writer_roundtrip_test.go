@@ -110,6 +110,13 @@ func TestWriterRoundTrip(t *testing.T) {
 			if err != nil || html != "<p>html body</p>" {
 				t.Fatalf("html = %q, %v", html, err)
 			}
+			submitTime, err := got.SubmitTime()
+			if err != nil {
+				t.Fatalf("submit time: %v", err)
+			}
+			if !submitTime.Equal(sent) {
+				t.Fatalf("submit time = %v, want %v", submitTime, sent)
+			}
 
 			var attachmentSeen bool
 			for attachment, iterErr := range got.Attachments() {
