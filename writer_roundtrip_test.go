@@ -376,7 +376,6 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 	}
 }
 
-
 func bbtContains(pst *PST, target util.BlockID) (bool, int, error) {
 	targetKey := uint64(target &^ util.BlockIDInternalBit)
 	root := pst.db.Header().BBTRoot()
