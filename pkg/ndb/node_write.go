@@ -101,6 +101,13 @@ func NewSubnodeBuilder(txn *WriteTransaction) *SubnodeBuilder {
 
 // AddSubnode adds a subnode entry.
 func (b *SubnodeBuilder) AddSubnode(nid util.NodeID, data []byte) error {
+	return b.AddSubnodeWithSubnodes(nid, data, 0)
+}
+
+// AddSubnodeWithSubnodes adds a subnode entry whose node may itself own a
+// subnode tree. This is used for objects such as attachments whose large
+// properties are stored indirectly beneath the attachment node.
+func (b *SubnodeBuilder) AddSubnodeWithSubnodes(nid util.NodeID, data []byte, subBID util.BlockID) error {
 	var dataBID util.BlockID
 	var err error
 
@@ -123,7 +130,7 @@ func (b *SubnodeBuilder) AddSubnode(nid util.NodeID, data []byte) error {
 	b.entries = append(b.entries, disk.SubnodeLeafEntry{
 		NID:     uint64(nid),
 		DataBID: uint64(dataBID),
-		SubBID:  0,
+		SubBID:  uint64(subBID),
 	})
 
 	return nil
