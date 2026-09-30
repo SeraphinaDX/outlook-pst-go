@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
 func TestWriterRoundTrip(t *testing.T) {
@@ -233,4 +234,187 @@ func TestWriterManyMessagesContentsTable(t *testing.T) {
 	if got != count {
 		t.Fatalf("message count = %d, want %d", got, count)
 	}
+}
+
+func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "append-after-reopen.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	inbox, err := ctx.CreateFolder(root, "Inbox")
+	if err != nil {
+		_ = ctx.Rollback()
+		_ = pst.Close()
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	const firstBatch = 100
+	for i := 0; i < firstBatch; i++ {
+		if _, err := ctx.CreateMessage(inbox).
+			SetSubject(fmt.Sprintf("before reopen %03d", i)).
+			SetBody("body").
+			Build(); err != nil {
+			_ = ctx.Rollback()
+			_ = pst.Close()
+			t.Fatalf("Build first batch message %d: %v", i+1, err)
+		}
+	}
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit first batch: %v", err)
+	}
+	nextBIDBeforeClose := pst.db.NextBlockID()
+	if headerNext := util.BlockID(pst.db.Header().BidNextB); headerNext != nextBIDBeforeClose {
+		_ = pst.Close()
+		t.Fatalf("header bidNextB = 0x%X, allocator next BID = 0x%X", headerNext, nextBIDBeforeClose)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close first batch: %v", err)
+	}
+
+	pst, err = OpenReadWrite(path)
+	if err != nil {
+		t.Fatalf("OpenReadWrite: %v", err)
+	}
+	if reopenedNext := pst.db.NextBlockID(); reopenedNext != nextBIDBeforeClose {
+		_ = pst.Close()
+		t.Fatalf("reopened next BID = 0x%X, want 0x%X", reopenedNext, nextBIDBeforeClose)
+	}
+	root, err = pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("FindSubfolder after reopen: %v", err)
+	}
+	ctx, err = pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite after reopen: %v", err)
+	}
+
+	const secondBatch = 5
+	for i := 0; i < secondBatch; i++ {
+		if _, err := ctx.CreateMessage(inbox).
+			SetSubject(fmt.Sprintf("after reopen %03d", i)).
+			SetBody("body").
+			Build(); err != nil {
+			_ = ctx.Rollback()
+			_ = pst.Close()
+			t.Fatalf("Build second batch message %d: %v", i+1, err)
+		}
+	}
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit second batch: %v", err)
+	}
+
+	contentsNID := util.MakeNID(util.NIDTypeContentsTable, inbox.ID().Index())
+	contentsInfo, err := pst.db.LookupNode(contentsNID)
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("lookup contents node after second commit: %v", err)
+	}
+	if _, err := pst.db.LookupBlock(contentsInfo.DataBID); err != nil {
+		found, count, scanErr := bbtContains(pst, contentsInfo.DataBID)
+		_ = pst.Close()
+		t.Fatalf("lookup contents block 0x%X after second commit: %v (present anywhere=%v, BBT entries=%d, scan err=%v)", contentsInfo.DataBID, err, found, count, scanErr)
+	}
+
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close second batch: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open final PST: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	contentsInfo, err = pst.db.LookupNode(contentsNID)
+	if err != nil {
+		t.Fatalf("lookup contents node after final reopen: %v", err)
+	}
+	if _, err := pst.db.LookupBlock(contentsInfo.DataBID); err != nil {
+		t.Fatalf("lookup contents block 0x%X after final reopen: %v", contentsInfo.DataBID, err)
+	}
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder final: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		t.Fatalf("FindSubfolder final: %v", err)
+	}
+
+	got := 0
+	for _, iterErr := range inbox.Messages() {
+		if iterErr != nil {
+			t.Fatalf("iterate final messages: %v", iterErr)
+		}
+		got++
+	}
+	want := firstBatch + secondBatch
+	if got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
+	}
+}
+
+func bbtContains(pst *PST, target util.BlockID) (bool, int, error) {
+	targetKey := uint64(target &^ util.BlockIDInternalBit)
+	root := pst.db.Header().BBTRoot()
+	return bbtPageContains(pst, root.IB, targetKey)
+}
+
+func bbtPageContains(pst *PST, offset uint64, target uint64) (bool, int, error) {
+	buf := make([]byte, disk.PageSize)
+	n, err := pst.db.File().ReadAt(buf, int64(offset)) //nolint:gosec // test offsets come from PST BREF values
+	if err != nil {
+		return false, 0, err
+	}
+	if n != disk.PageSize {
+		return false, 0, fmt.Errorf("short BBT page read: %d", n)
+	}
+	page, err := disk.ParseBTPage(buf, pst.db.Format(), disk.PageTypeBBT)
+	if err != nil {
+		return false, 0, err
+	}
+	if page.IsLeaf() {
+		for _, entry := range page.BBTEntries {
+			key := entry.BRef.BID &^ uint64(util.BlockIDInternalBit)
+			if key == target {
+				return true, len(page.BBTEntries), nil
+			}
+		}
+		return false, len(page.BBTEntries), nil
+	}
+
+	total := 0
+	for _, child := range page.NonleafEntries {
+		found, count, err := bbtPageContains(pst, child.Ref.IB, target)
+		if err != nil {
+			return false, total, err
+		}
+		total += count
+		if found {
+			return true, total, nil
+		}
+	}
+	return false, total, nil
 }

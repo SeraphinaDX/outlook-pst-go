@@ -49,10 +49,9 @@ func (w *BTWriter) InsertNode(info *NodeInfo) error {
 	if _, exists := w.nbtInserts[info.NID]; exists {
 		return fmt.Errorf("node 0x%X already queued for insertion", info.NID)
 	}
-	if w.nbtDeletes[info.NID] {
-		// Reinserting a deleted node
-		delete(w.nbtDeletes, info.NID)
-	}
+	// If this NID was deleted from the committed tree earlier in the
+	// transaction, keep the deletion marker. Apply() must remove the old
+	// on-disk entry before appending this replacement entry.
 	w.nbtInserts[info.NID] = info
 	return nil
 }
@@ -80,9 +79,9 @@ func (w *BTWriter) InsertBlock(info *BlockInfo) error {
 	if _, exists := w.bbtInserts[lookupBID]; exists {
 		return fmt.Errorf("block 0x%X already queued for insertion", info.BID)
 	}
-	if w.bbtDeletes[lookupBID] {
-		delete(w.bbtDeletes, lookupBID)
-	}
+	// Keep any deletion marker for the same committed BID key. This makes
+	// delete+insert a true replacement instead of leaving duplicate BBT
+	// entries behind.
 	w.bbtInserts[lookupBID] = info
 	return nil
 }
