@@ -3,6 +3,7 @@ package outlookpst
 import (
 	"fmt"
 
+	"github.com/grokify/outlook-pst-go/pkg/disk"
 	"github.com/grokify/outlook-pst-go/pkg/ltp"
 	"github.com/grokify/outlook-pst-go/pkg/ndb"
 	"github.com/grokify/outlook-pst-go/pkg/util"
