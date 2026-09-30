@@ -14,7 +14,6 @@ type HeapWriter struct {
 	clientSig   byte
 	rootHID     util.HeapID
 	allocations []heapAllocation
-	format      disk.PSTFormat
 }
 
 // heapAllocation represents a single heap allocation.
@@ -24,10 +23,9 @@ type heapAllocation struct {
 }
 
 // NewHeapWriter creates a new heap writer.
-func NewHeapWriter(clientSig byte, format disk.PSTFormat) *HeapWriter {
+func NewHeapWriter(clientSig byte, _ disk.PSTFormat) *HeapWriter {
 	return &HeapWriter{
 		clientSig: clientSig,
-		format:    format,
 	}
 }
 
@@ -84,14 +82,7 @@ func (w *HeapWriter) fitsOnPage(pageIndex uint16, newDataSize, newAllocCount int
 	// HNPAGEMAP = cAlloc(2) + cFree(2) + rgibAlloc[cAlloc+1].
 	pageMapSize := 4 + (newAllocCount+1)*2
 	total := headerSize + dataSize + newDataSize + pageMapSize
-	return total <= w.maxPageSize()
-}
-
-func (w *HeapWriter) maxPageSize() int {
-	if w.format == disk.FormatANSI {
-		return disk.MaxDataBlockSizeANSI
-	}
-	return disk.MaxDataBlockSizeUnicode
+	return total <= disk.MaxDataBlockSizeUnicode
 }
 
 // SetRoot sets the root HID for the heap.
@@ -145,13 +136,13 @@ func (w *HeapWriter) buildPage(pageIndex uint16, allocs []heapAllocation, pad bo
 	}
 	pageMapSize := 4 + (len(allocs)+1)*2
 	usedSize := headerSize + totalDataSize + pageMapSize
-	if usedSize > w.maxPageSize() {
+	if usedSize > disk.MaxDataBlockSizeUnicode {
 		return nil, fmt.Errorf("heap page %d too large: %d bytes", pageIndex, usedSize)
 	}
 
 	pageSize := usedSize
 	if pad {
-		pageSize = w.maxPageSize()
+		pageSize = disk.MaxDataBlockSizeUnicode
 	}
 	buf := make([]byte, pageSize)
 
