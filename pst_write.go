@@ -261,15 +261,17 @@ func (p *PST) BeginWrite() (*WriteContext, error) {
 		return nil, err
 	}
 	return &WriteContext{
-		pst: p,
-		txn: txn,
+		pst:          p,
+		txn:          txn,
+		tableWriters: make(map[util.NodeID]*ltp.TableWriter),
 	}, nil
 }
 
 // WriteContext represents an active write transaction on a PST file.
 type WriteContext struct {
-	pst *PST
-	txn *ndb.WriteTransaction
+	pst          *PST
+	txn          *ndb.WriteTransaction
+	tableWriters map[util.NodeID]*ltp.TableWriter
 }
 
 // Commit commits all changes in the transaction.
