@@ -138,6 +138,34 @@ func (b *SubnodeBuilder) AddSubnodeWithBID(nid util.NodeID, dataBID util.BlockID
 	})
 }
 
+// AddSubnodeWithSubnodes adds a subnode that has both data and its own subnode tree.
+func (b *SubnodeBuilder) AddSubnodeWithSubnodes(nid util.NodeID, data []byte, subBID util.BlockID) error {
+	var dataBID util.BlockID
+	var err error
+
+	if len(data) > 0 {
+		maxSize := disk.MaxDataBlockSizeUnicode
+		if b.txn.db.Format() == disk.FormatANSI {
+			maxSize = disk.MaxDataBlockSizeANSI
+		}
+		if len(data) <= maxSize {
+			dataBID, err = b.txn.WriteBlockData(data)
+		} else {
+			dataBID, err = b.txn.WriteExtendedBlockData(data)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to write subnode data: %w", err)
+		}
+	}
+
+	b.entries = append(b.entries, disk.SubnodeLeafEntry{
+		NID:     uint64(nid),
+		DataBID: uint64(dataBID),
+		SubBID:  uint64(subBID),
+	})
+	return nil
+}
+
 // Build creates the subnode block and returns its BID.
 func (b *SubnodeBuilder) Build() (util.BlockID, error) {
 	if len(b.entries) == 0 {
@@ -253,19 +281,26 @@ func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
 
 // UpdateNodeSubnodes updates the subnode block for an existing node.
 func UpdateNodeSubnodes(txn *WriteTransaction, nid util.NodeID, subBID util.BlockID) error {
-	info, err := txn.db.LookupNode(nid)
-	if err != nil {
-		return fmt.Errorf("node not found: %w", err)
+	info, pending := txn.btwriter.nbtInserts[nid]
+	var err error
+	if !pending {
+		info, err = txn.db.LookupNode(nid)
+		if err != nil {
+			return fmt.Errorf("node not found: %w", err)
+		}
 	}
 
-	// Delete old subnode block if present
-	if info.SubBID != 0 {
+	if !pending && info.SubBID != 0 {
 		if err := txn.DeleteBlock(info.SubBID); err != nil {
 			_ = err
 		}
 	}
 
-	// Delete old NBT entry and insert updated one
+	if pending {
+		info.SubBID = subBID
+		return nil
+	}
+
 	if err := txn.btwriter.DeleteNode(nid); err != nil {
 		return err
 	}
@@ -276,7 +311,6 @@ func UpdateNodeSubnodes(txn *WriteTransaction, nid util.NodeID, subBID util.Bloc
 		SubBID:    subBID,
 		ParentNID: info.ParentNID,
 	}
-
 	return txn.btwriter.InsertNode(newInfo)
 }
 
