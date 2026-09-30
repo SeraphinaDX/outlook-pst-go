@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
 func TestWriterRoundTrip(t *testing.T) {
@@ -162,6 +163,31 @@ func TestWriterRoundTrip(t *testing.T) {
 	}
 }
 
+
+func logRootStorage(t *testing.T, pst *PST, label string) {
+	t.Helper()
+	info, err := pst.db.LookupNode(util.NIDRootFolder)
+	if err != nil {
+		t.Logf("%s root node lookup: %v", label, err)
+		return
+	}
+	block, err := pst.db.LookupBlock(info.DataBID)
+	if err != nil {
+		t.Logf("%s root BID 0x%X lookup: %v", label, info.DataBID, err)
+		return
+	}
+	data, err := pst.db.ReadBlockData(info.DataBID)
+	if err != nil {
+		t.Logf("%s root BID 0x%X at 0x%X read: %v", label, info.DataBID, block.Location, err)
+		return
+	}
+	head := data
+	if len(head) > 16 {
+		head = head[:16]
+	}
+	t.Logf("%s root NID=0x%X BID=0x%X IB=0x%X size=%d head=% X", label, info.NID, info.DataBID, block.Location, block.Size, head)
+}
+
 func TestWriterLargeValuesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "large-values.pst")
 	pst, err := Create(path, disk.FormatUnicode)
@@ -197,6 +223,7 @@ func TestWriterLargeValuesRoundTrip(t *testing.T) {
 	if err := ctx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+	logRootStorage(t, pst, "before close")
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -206,6 +233,7 @@ func TestWriterLargeValuesRoundTrip(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = pst.Close() }()
+	logRootStorage(t, pst, "after reopen")
 
 	root, err = pst.RootFolder()
 	if err != nil {
@@ -286,6 +314,7 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 	if err := ctx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+	logRootStorage(t, pst, "bulk before close")
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -295,6 +324,7 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = pst.Close() }()
+	logRootStorage(t, pst, "bulk after reopen")
 
 	root, err = pst.RootFolder()
 	if err != nil {
