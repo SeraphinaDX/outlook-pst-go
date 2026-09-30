@@ -163,7 +163,6 @@ func TestWriterRoundTrip(t *testing.T) {
 	}
 }
 
-
 func logRootStorage(t *testing.T, pst *PST, label string) {
 	t.Helper()
 	info, err := pst.db.LookupNode(util.NIDRootFolder)
