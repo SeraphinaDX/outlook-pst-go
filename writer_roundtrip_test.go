@@ -331,8 +331,9 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		t.Fatalf("lookup contents node after second commit: %v", err)
 	}
 	if _, err := pst.db.LookupBlock(contentsInfo.DataBID); err != nil {
+		found, count, scanErr := bbtContains(pst, contentsInfo.DataBID)
 		_ = pst.Close()
-		t.Fatalf("lookup contents block 0x%X after second commit: %v", contentsInfo.DataBID, err)
+		t.Fatalf("lookup contents block 0x%X after second commit: %v (present anywhere=%v, BBT entries=%d, scan err=%v)", contentsInfo.DataBID, err, found, count, scanErr)
 	}
 
 	if err := pst.Close(); err != nil {
@@ -373,4 +374,48 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 	if got != want {
 		t.Fatalf("message count = %d, want %d", got, want)
 	}
+}
+
+
+func bbtContains(pst *PST, target util.BlockID) (bool, int, error) {
+	targetKey := uint64(target &^ util.BlockIDInternalBit)
+	root := pst.db.Header().BBTRoot()
+	return bbtPageContains(pst, root.IB, targetKey)
+}
+
+func bbtPageContains(pst *PST, offset uint64, target uint64) (bool, int, error) {
+	buf := make([]byte, disk.PageSize)
+	n, err := pst.db.File().ReadAt(buf, int64(offset))
+	if err != nil {
+		return false, 0, err
+	}
+	if n != disk.PageSize {
+		return false, 0, fmt.Errorf("short BBT page read: %d", n)
+	}
+	page, err := disk.ParseBTPage(buf, pst.db.Format(), disk.PageTypeBBT)
+	if err != nil {
+		return false, 0, err
+	}
+	if page.IsLeaf() {
+		for _, entry := range page.BBTEntries {
+			key := entry.BRef.BID &^ uint64(util.BlockIDInternalBit)
+			if key == target {
+				return true, len(page.BBTEntries), nil
+			}
+		}
+		return false, len(page.BBTEntries), nil
+	}
+
+	total := 0
+	for _, child := range page.NonleafEntries {
+		found, count, err := bbtPageContains(pst, child.Ref.IB, target)
+		if err != nil {
+			return false, total, err
+		}
+		total += count
+		if found {
+			return true, total, nil
+		}
+	}
+	return false, total, nil
 }
