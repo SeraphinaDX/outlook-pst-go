@@ -188,7 +188,7 @@ func TestWriterManyMessagesContentsTable(t *testing.T) {
 		t.Fatalf("CreateFolder: %v", err)
 	}
 
-	const count = 20
+	const count = 150
 	for i := 0; i < count; i++ {
 		subject := strings.Repeat("long subject segment ", 60) + fmt.Sprintf(" #%02d", i)
 		if _, err := ctx.CreateMessage(inbox).
@@ -308,7 +308,7 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		t.Fatalf("BeginWrite after reopen: %v", err)
 	}
 
-	const secondBatch = 5
+	const secondBatch = 30
 	for i := 0; i < secondBatch; i++ {
 		if _, err := ctx.CreateMessage(inbox).
 			SetSubject(fmt.Sprintf("after reopen %03d", i)).
