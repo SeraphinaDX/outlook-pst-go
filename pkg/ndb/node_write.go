@@ -232,8 +232,10 @@ func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
 	}
 
 	if pending {
+		// nbtInserts stores the same *NodeInfo pointer, so updating it in place
+		// changes the queued NBT entry without attempting a duplicate insert.
 		info.DataBID = newBID
-		return txn.btwriter.InsertNode(info)
+		return nil
 	}
 
 	if err := txn.btwriter.DeleteNode(nid); err != nil {
