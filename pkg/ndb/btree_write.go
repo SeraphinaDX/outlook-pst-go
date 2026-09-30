@@ -371,9 +371,12 @@ func (w *BTWriter) applyBBTChanges() (*disk.BlockReference, error) {
 		filteredEntries = append(filteredEntries, entry)
 	}
 
-	// Sort by BID
+	// BBT lookups compare BIDs with the internal bit cleared, so both leaf
+	// ordering and non-leaf separator keys must use the same normalized key.
 	sort.Slice(filteredEntries, func(i, j int) bool {
-		return filteredEntries[i].BRef.BID < filteredEntries[j].BRef.BID
+		left := filteredEntries[i].BRef.BID &^ uint64(util.BlockIDInternalBit)
+		right := filteredEntries[j].BRef.BID &^ uint64(util.BlockIDInternalBit)
+		return left < right
 	})
 
 	// Rebuild tree structure
@@ -473,7 +476,7 @@ func (w *BTWriter) buildBBTTree(entries []disk.BBTLeafEntry, maxPerPage int) (*d
 			return nil, err
 		}
 		leafRefs = append(leafRefs, *ref)
-		leafMaxKeys = append(leafMaxKeys, pageEntries[0].BRef.BID)
+		leafMaxKeys = append(leafMaxKeys, pageEntries[0].BRef.BID&^uint64(util.BlockIDInternalBit))
 	}
 
 	return w.buildBBTNonleafLevels(leafRefs, leafMaxKeys, 1)
