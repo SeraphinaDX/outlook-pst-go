@@ -319,7 +319,8 @@ func (r *TableRow) HasProperty(propID PropID) bool {
 		return false
 	}
 
-	return (r.rowData[bitmapOffset+byteIndex] & (1 << bitIndex)) != 0
+	// [MS-PST] numbers iBit from the most-significant bit of each CEB byte.
+	return (r.rowData[bitmapOffset+byteIndex] & (1 << (7 - bitIndex))) != 0
 }
 
 // GetRaw reads raw bytes for a column.
