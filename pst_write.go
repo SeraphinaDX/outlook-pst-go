@@ -274,9 +274,39 @@ type WriteContext struct {
 	tableWriters map[util.NodeID]*ltp.TableWriter
 }
 
-// Commit commits all changes in the transaction.
+// Commit flushes logical table updates and commits all changes.
 func (w *WriteContext) Commit() error {
+	if err := w.flushTables(); err != nil {
+		return err
+	}
 	return w.txn.Commit()
+}
+
+func (w *WriteContext) flushTables() error {
+	for tableNID, writer := range w.tableWriters {
+		data, subnodes, err := writer.BuildWithSubnodes()
+		if err != nil {
+			return fmt.Errorf("failed to build table 0x%X: %w", tableNID, err)
+		}
+		if err := ndb.UpdateNodeData(w.txn, tableNID, data); err != nil {
+			return fmt.Errorf("failed to update table 0x%X: %w", tableNID, err)
+		}
+
+		subnodeBuilder := ndb.NewSubnodeBuilder(w.txn)
+		for _, subnode := range subnodes {
+			if err := subnodeBuilder.AddSubnode(subnode.NID, subnode.Data); err != nil {
+				return fmt.Errorf("failed to write table 0x%X subnode 0x%X: %w", tableNID, subnode.NID, err)
+			}
+		}
+		subBID, err := subnodeBuilder.Build()
+		if err != nil {
+			return fmt.Errorf("failed to build table 0x%X subnodes: %w", tableNID, err)
+		}
+		if err := ndb.UpdateNodeSubnodes(w.txn, tableNID, subBID); err != nil {
+			return fmt.Errorf("failed to attach table 0x%X subnodes: %w", tableNID, err)
+		}
+	}
+	return nil
 }
 
 // Rollback discards all changes in the transaction.
