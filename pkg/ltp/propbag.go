@@ -121,16 +121,18 @@ func (pb *PropertyBag) readPropertyValue(entry *PropertyEntry) ([]byte, error) {
 	propType := entry.PropType
 	hnid := entry.Value
 
-	// Check if it's a fixed-size property
+	// Property Context records only have a 4-byte dwValueHnid field.
+	// Fixed-size values up to 4 bytes are stored inline there. Larger
+	// fixed-size types such as FILETIME, int64, float64 and GUID are stored
+	// out-of-line and dwValueHnid contains the HID/NID reference instead.
 	fixedSize := propType.FixedSize()
-	if fixedSize > 0 {
-		// Value is stored inline in the HNID field
+	if fixedSize > 0 && fixedSize <= 4 {
 		buf := make([]byte, 4)
 		binary.LittleEndian.PutUint32(buf, uint32(hnid))
 		return buf[:fixedSize], nil
 	}
 
-	// Variable-size property
+	// Variable-size and fixed-size values larger than 4 bytes are indirect.
 	if hnid.IsHeapID() {
 		// Read from heap
 		return pb.heap.Read(hnid.ToHeapID())
