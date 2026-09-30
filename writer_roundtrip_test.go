@@ -2,7 +2,9 @@ package outlookpst
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,5 +159,161 @@ func TestWriterRoundTrip(t *testing.T) {
 				t.Fatalf("recipients did not survive round trip: to=%v cc=%v", toSeen, ccSeen)
 			}
 		})
+	}
+}
+
+
+func TestWriterLargeValuesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large-values.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	folder, err := ctx.CreateFolder(root, "Large")
+	if err != nil {
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	html := "<html><body>" + strings.Repeat("<p>large HTML body</p>", 2500) + "</body></html>"
+	attachment := bytes.Repeat([]byte{0x00, 0x01, 0x02, 0x03, 0xFE, 0xFF}, 20000)
+
+	_, err = ctx.CreateMessage(folder).
+		SetSubject("large values").
+		SetBody("plain body").
+		SetHTMLBody(html).
+		AddAttachmentWithMime("large.bin", attachment, "application/octet-stream").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := ctx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	folder, err = root.FindSubfolder("Large")
+	if err != nil {
+		t.Fatalf("FindSubfolder: %v", err)
+	}
+
+	var got *Message
+	for msg, iterErr := range folder.Messages() {
+		if iterErr != nil {
+			t.Fatalf("Messages: %v", iterErr)
+		}
+		got = msg
+		break
+	}
+	if got == nil {
+		t.Fatal("message missing after reopen")
+	}
+
+	gotHTML, err := got.HTMLBody()
+	if err != nil {
+		t.Fatalf("HTMLBody: %v", err)
+	}
+	if gotHTML != html {
+		t.Fatalf("HTML body length = %d, want %d", len(gotHTML), len(html))
+	}
+
+	var gotAttachment []byte
+	for a, iterErr := range got.Attachments() {
+		if iterErr != nil {
+			t.Fatalf("Attachments: %v", iterErr)
+		}
+		gotAttachment, err = a.Data()
+		if err != nil {
+			t.Fatalf("attachment Data: %v", err)
+		}
+		break
+	}
+	if !bytes.Equal(gotAttachment, attachment) {
+		t.Fatalf("attachment length = %d, want %d", len(gotAttachment), len(attachment))
+	}
+}
+
+func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large-contents.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	folder, err := ctx.CreateFolder(root, "Bulk")
+	if err != nil {
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	const wantMessages = 500
+	for i := 0; i < wantMessages; i++ {
+		subject := fmt.Sprintf("bulk message %04d %s", i, strings.Repeat("x", 48))
+		if _, err := ctx.CreateMessage(folder).
+			SetSubject(subject).
+			SetBody("small body").
+			Build(); err != nil {
+			t.Fatalf("Build message %d: %v", i, err)
+		}
+	}
+
+	if err := ctx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	folder, err = root.FindSubfolder("Bulk")
+	if err != nil {
+		t.Fatalf("FindSubfolder: %v", err)
+	}
+
+	got := 0
+	for _, iterErr := range folder.Messages() {
+		if iterErr != nil {
+			t.Fatalf("Messages: %v", iterErr)
+		}
+		got++
+	}
+	if got != wantMessages {
+		t.Fatalf("message count = %d, want %d", got, wantMessages)
 	}
 }
