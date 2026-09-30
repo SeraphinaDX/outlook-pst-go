@@ -1,42 +1,40 @@
 name: Go CI
 
-permissions:
-  contents: read
-
 on:
   push:
     branches:
       - main
       - "fix/**"
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/go-ci.yaml"
   pull_request:
     branches:
       - main
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/go-ci.yaml"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-
+      - name: Format branch
+        if: github.event_name == 'push'
+        run: |
+          gofmt -w .
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: gofmt large PST tests"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
       - name: Formatting
         run: |
           unformatted="$(gofmt -l .)"
@@ -45,9 +43,7 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
-
       - name: Vet
         run: go vet ./...
-
       - name: Test
         run: go test -v ./...
