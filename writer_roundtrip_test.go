@@ -3,6 +3,7 @@ package outlookpst
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,11 +47,12 @@ func TestWriterRoundTrip(t *testing.T) {
 			}
 
 			sent := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-			wantAttachment := []byte("attachment bytes survive the PST round trip")
+			wantHTML := "<p>" + strings.Repeat("large html body ", 4000) + "</p>"
+			wantAttachment := bytes.Repeat([]byte{0x5A}, 64*1024)
 			_, err = ctx.CreateMessage(inbox).
 				SetSubject("MailSalonTools round trip").
 				SetBody("plain body").
-				SetHTMLBody("<p>html body</p>").
+				SetHTMLBody(wantHTML).
 				SetFrom("Britney", "britney@example.com").
 				AddTo("Recipient", "recipient@example.com").
 				AddCC("Copy", "copy@example.com").
@@ -107,8 +109,8 @@ func TestWriterRoundTrip(t *testing.T) {
 				t.Fatalf("body = %q, %v", body, err)
 			}
 			html, err := got.HTMLBody()
-			if err != nil || html != "<p>html body</p>" {
-				t.Fatalf("html = %q, %v", html, err)
+			if err != nil || html != wantHTML {
+				t.Fatalf("html length = %d, want %d, err=%v", len(html), len(wantHTML), err)
 			}
 			submitTime, err := got.SubmitTime()
 			if err != nil {
