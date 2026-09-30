@@ -80,9 +80,8 @@ func initializePSTStructure(f *os.File, header *disk.Header, opts CreateOptions)
 		return fmt.Errorf("failed to write DList page: %w", err)
 	}
 
-	// Write initial AMap page (at 0x4400)
-	amapPage := amap.PendingAllocations() // Get initial AMap state
-	_ = amapPage                          // AMap written through manager
+	// The AMap is serialized after the initial nodes and B-tree pages have
+	// been allocated so all of those live ranges are marked occupied.
 
 	// Create minimal B-tree structure
 	// We need at least:
@@ -204,6 +203,11 @@ func initializePSTStructure(f *os.File, header *disk.Header, opts CreateOptions)
 	}
 	if _, err := f.WriteAt(bbtPageData, int64(bbtPageOffset)); err != nil { //nolint:gosec // G115: offset bounded by file size
 		return fmt.Errorf("failed to write BBT page: %w", err)
+	}
+
+	// Persist the allocation map after all initial blocks/pages are reserved.
+	if err := amap.WritePages(f); err != nil {
+		return fmt.Errorf("failed to write initial allocation map: %w", err)
 	}
 
 	// Update header with B-tree roots
