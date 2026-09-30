@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"github.com/grokify/outlook-pst-go/pkg/ndb"
 	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
@@ -184,9 +185,22 @@ func (w *TableWriter) DeleteRow(rowID uint32) {
 }
 
 func (w *TableWriter) Build() ([]byte, error) {
-	// Build is intentionally repeatable. Folder contents/hierarchy tables are
-	// rebuilt after each mutation; carrying the previous heap forward would
-	// retain stale row values and make heap usage grow quadratically.
+	return w.build(nil, nil)
+}
+
+// BuildWithSubnodes builds the table and spills oversized variable cells and
+// row matrices into table-owned subnodes. nextIndex is advanced for each
+// generated LTP subnode NID.
+func (w *TableWriter) BuildWithSubnodes(subnodes *ndb.SubnodeBuilder, nextIndex *uint32) ([]byte, error) {
+	if subnodes == nil || nextIndex == nil {
+		return nil, fmt.Errorf("subnode builder and index are required")
+	}
+	return w.build(subnodes, nextIndex)
+}
+
+func (w *TableWriter) build(subnodes *ndb.SubnodeBuilder, nextIndex *uint32) ([]byte, error) {
+	// Build is intentionally repeatable. Table contexts are reconstructed from
+	// logical rows rather than retaining stale heap allocations.
 	w.heap = CreateTableContextHeap(w.format)
 	w.rowBTH = CreateRowIndexBTH(w.heap, w.format)
 
@@ -195,6 +209,25 @@ func (w *TableWriter) Build() ([]byte, error) {
 	}
 	if len(w.columns) > 255 {
 		return nil, fmt.Errorf("table has too many columns: %d", len(w.columns))
+	}
+
+	allocateIndirect := func(value []byte) (util.HeapNodeID, error) {
+		if len(value) <= disk.HeapMaxAllocSize {
+			hid, err := w.heap.Allocate(value)
+			if err != nil {
+				return 0, err
+			}
+			return util.HeapNodeID(hid), nil
+		}
+		if subnodes == nil {
+			return 0, fmt.Errorf("allocation too large: %d bytes (max %d)", len(value), disk.HeapMaxAllocSize)
+		}
+		nid := util.MakeNID(util.NIDTypeLTP, *nextIndex)
+		*nextIndex = *nextIndex + 1
+		if err := subnodes.AddSubnode(nid, value); err != nil {
+			return 0, err
+		}
+		return util.HeapNodeID(nid), nil
 	}
 
 	end4, end2, end1 := w.calculateColumnOffsets()
@@ -232,11 +265,11 @@ func (w *TableWriter) Build() ([]byte, error) {
 				continue
 			}
 
-			hid, err := w.heap.Allocate(value)
+			hnid, err := allocateIndirect(value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to allocate row value: %w", err)
 			}
-			binary.LittleEndian.PutUint32(rowMatrix[valueOffset:valueOffset+4], uint32(hid))
+			binary.LittleEndian.PutUint32(rowMatrix[valueOffset:valueOffset+4], uint32(hnid))
 		}
 
 		copy(rowMatrix[rowOffset+rowDataSize:rowOffset+rowSize], existenceBitmap)
@@ -250,14 +283,11 @@ func (w *TableWriter) Build() ([]byte, error) {
 
 	var rowMatrixHNID util.HeapNodeID
 	if len(rowMatrix) > 0 {
-		if len(rowMatrix) > disk.HeapMaxAllocSize {
-			return nil, fmt.Errorf("row matrix too large for heap: %d bytes", len(rowMatrix))
-		}
-		hid, err := w.heap.Allocate(rowMatrix)
+		hnid, err := allocateIndirect(rowMatrix)
 		if err != nil {
 			return nil, fmt.Errorf("failed to allocate row matrix: %w", err)
 		}
-		rowMatrixHNID = util.HeapNodeID(hid)
+		rowMatrixHNID = hnid
 	}
 
 	rowBTHHID, err := w.rowBTH.Build()

@@ -258,6 +258,66 @@ func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
 	return txn.btwriter.InsertNode(newInfo)
 }
 
+// UpdateNodeDataAndSubnodes replaces both the data and subnode blocks for a
+// node in one NBT update. It supports nodes created earlier in the same
+// transaction as well as committed nodes loaded from disk.
+func UpdateNodeDataAndSubnodes(txn *WriteTransaction, nid util.NodeID, data []byte, subBID util.BlockID) error {
+	info, pending := txn.btwriter.nbtInserts[nid]
+	var err error
+	if !pending {
+		info, err = txn.db.LookupNode(nid)
+		if err != nil {
+			return fmt.Errorf("node not found: %w", err)
+		}
+	}
+
+	var newDataBID util.BlockID
+	if len(data) > 0 {
+		maxSize := disk.MaxDataBlockSizeUnicode
+		if txn.db.Format() == disk.FormatANSI {
+			maxSize = disk.MaxDataBlockSizeANSI
+		}
+		if len(data) <= maxSize {
+			newDataBID, err = txn.WriteBlockData(data)
+		} else {
+			newDataBID, err = txn.WriteExtendedBlockData(data)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to write new data: %w", err)
+		}
+	}
+
+	if pending {
+		// Mutate the queued NBT entry in place. Old same-transaction blocks may
+		// remain unreferenced in this transaction, but the committed NBT will
+		// point only at the final data/subnode pair.
+		info.DataBID = newDataBID
+		info.SubBID = subBID
+		return nil
+	}
+
+	if info.DataBID != 0 {
+		if err := txn.DeleteBlock(info.DataBID); err != nil {
+			_ = err
+		}
+	}
+	if info.SubBID != 0 {
+		if err := txn.DeleteBlock(info.SubBID); err != nil {
+			_ = err
+		}
+	}
+	if err := txn.btwriter.DeleteNode(nid); err != nil {
+		return err
+	}
+
+	return txn.btwriter.InsertNode(&NodeInfo{
+		NID:       nid,
+		DataBID:   newDataBID,
+		SubBID:    subBID,
+		ParentNID: info.ParentNID,
+	})
+}
+
 // UpdateNodeSubnodes updates the subnode block for an existing node.
 func UpdateNodeSubnodes(txn *WriteTransaction, nid util.NodeID, subBID util.BlockID) error {
 	info, err := txn.db.LookupNode(nid)
