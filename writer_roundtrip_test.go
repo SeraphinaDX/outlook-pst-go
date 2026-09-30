@@ -275,6 +275,11 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		_ = pst.Close()
 		t.Fatalf("Commit first batch: %v", err)
 	}
+	nextBIDBeforeClose := pst.db.NextBlockID()
+	if headerNext := util.BlockID(pst.db.Header().BidNextB); headerNext != nextBIDBeforeClose {
+		_ = pst.Close()
+		t.Fatalf("header bidNextB = 0x%X, allocator next BID = 0x%X", headerNext, nextBIDBeforeClose)
+	}
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close first batch: %v", err)
 	}
@@ -282,6 +287,10 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 	pst, err = OpenReadWrite(path)
 	if err != nil {
 		t.Fatalf("OpenReadWrite: %v", err)
+	}
+	if reopenedNext := pst.db.NextBlockID(); reopenedNext != nextBIDBeforeClose {
+		_ = pst.Close()
+		t.Fatalf("reopened next BID = 0x%X, want 0x%X", reopenedNext, nextBIDBeforeClose)
 	}
 	root, err = pst.RootFolder()
 	if err != nil {
