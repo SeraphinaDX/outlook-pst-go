@@ -142,11 +142,8 @@ func addToHierarchyTable(ctx *WriteContext, parent *Folder, childNID util.NodeID
 		return err
 	}
 
-	data, err := writer.Build()
-	if err != nil {
-		return err
-	}
-	return ndb.UpdateNodeData(ctx.Transaction(), tableNID, data)
+	ctx.markTableDirty(tableNID)
+	return nil
 }
 
 // DeleteFolder deletes a folder and all its contents recursively.
