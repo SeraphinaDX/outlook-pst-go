@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
-	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
 func TestWriterRoundTrip(t *testing.T) {
@@ -163,30 +162,6 @@ func TestWriterRoundTrip(t *testing.T) {
 	}
 }
 
-func logRootStorage(t *testing.T, pst *PST, label string) {
-	t.Helper()
-	info, err := pst.db.LookupNode(util.NIDRootFolder)
-	if err != nil {
-		t.Logf("%s root node lookup: %v", label, err)
-		return
-	}
-	block, err := pst.db.LookupBlock(info.DataBID)
-	if err != nil {
-		t.Logf("%s root BID 0x%X lookup: %v", label, info.DataBID, err)
-		return
-	}
-	data, err := pst.db.ReadBlockData(info.DataBID)
-	if err != nil {
-		t.Logf("%s root BID 0x%X at 0x%X read: %v", label, info.DataBID, block.Location, err)
-		return
-	}
-	head := data
-	if len(head) > 16 {
-		head = head[:16]
-	}
-	t.Logf("%s root NID=0x%X BID=0x%X IB=0x%X size=%d head=% X", label, info.NID, info.DataBID, block.Location, block.Size, head)
-}
-
 func TestWriterLargeValuesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "large-values.pst")
 	pst, err := Create(path, disk.FormatUnicode)
@@ -222,7 +197,6 @@ func TestWriterLargeValuesRoundTrip(t *testing.T) {
 	if err := ctx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	logRootStorage(t, pst, "before close")
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -232,7 +206,6 @@ func TestWriterLargeValuesRoundTrip(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = pst.Close() }()
-	logRootStorage(t, pst, "after reopen")
 
 	root, err = pst.RootFolder()
 	if err != nil {
@@ -313,7 +286,6 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 	if err := ctx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	logRootStorage(t, pst, "bulk before close")
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -323,7 +295,6 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = pst.Close() }()
-	logRootStorage(t, pst, "bulk after reopen")
 
 	root, err = pst.RootFolder()
 	if err != nil {
@@ -343,5 +314,120 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 	}
 	if got != wantMessages {
 		t.Fatalf("message count = %d, want %d", got, wantMessages)
+	}
+}
+
+
+func TestWriterBatchedTransactionsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batched.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	folder, err := ctx.CreateFolder(root, "Imported")
+	if err != nil {
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	const batches = 5
+	const perBatch = 100
+	for batch := 0; batch < batches; batch++ {
+		if batch > 0 {
+			pst, err = OpenReadWrite(path)
+			if err != nil {
+				t.Fatalf("OpenReadWrite batch %d: %v", batch, err)
+			}
+			root, err = pst.RootFolder()
+			if err != nil {
+				t.Fatalf("RootFolder batch %d: %v", batch, err)
+			}
+			folder, err = root.FindSubfolder("Imported")
+			if err != nil {
+				t.Fatalf("FindSubfolder batch %d: %v", batch, err)
+			}
+			ctx, err = pst.BeginWrite()
+			if err != nil {
+				t.Fatalf("BeginWrite batch %d: %v", batch, err)
+			}
+		}
+
+		for i := 0; i < perBatch; i++ {
+			n := batch*perBatch + i
+			builder := ctx.CreateMessage(folder).
+				SetSubject(fmt.Sprintf("batched message %04d %s", n, strings.Repeat("y", 40))).
+				SetBody("small body")
+			if n == 202 {
+				builder.SetHTMLBody("<html><body>" + strings.Repeat("<p>large batch HTML</p>", 2500) + "</body></html>").
+					AddAttachmentWithMime("batch-large.bin", bytes.Repeat([]byte{1, 2, 3, 4}, 25000), "application/octet-stream")
+			}
+			if _, err := builder.Build(); err != nil {
+				t.Fatalf("Build batch %d message %d: %v", batch, n, err)
+			}
+		}
+
+		if err := ctx.Commit(); err != nil {
+			t.Fatalf("Commit batch %d: %v", batch, err)
+		}
+		if err := pst.Close(); err != nil {
+			t.Fatalf("Close batch %d: %v", batch, err)
+		}
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open final PST: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder final: %v", err)
+	}
+	folder, err = root.FindSubfolder("Imported")
+	if err != nil {
+		t.Fatalf("FindSubfolder final: %v", err)
+	}
+
+	got := 0
+	largeSeen := false
+	for msg, iterErr := range folder.Messages() {
+		if iterErr != nil {
+			t.Fatalf("Messages final: %v", iterErr)
+		}
+		got++
+		subject, _ := msg.Subject()
+		if strings.HasPrefix(subject, "batched message 0202 ") {
+			html, err := msg.HTMLBody()
+			if err != nil || len(html) < 40000 {
+				t.Fatalf("large batched HTML missing: len=%d err=%v", len(html), err)
+			}
+			for attachment, attachErr := range msg.Attachments() {
+				if attachErr != nil {
+					t.Fatalf("large batched attachment: %v", attachErr)
+				}
+				data, err := attachment.Data()
+				if err != nil {
+					t.Fatalf("large batched attachment data: %v", err)
+				}
+				if len(data) == 100000 {
+					largeSeen = true
+				}
+			}
+		}
+	}
+	if got != batches*perBatch {
+		t.Fatalf("message count = %d, want %d", got, batches*perBatch)
+	}
+	if !largeSeen {
+		t.Fatal("large value message did not survive batched transactions")
 	}
 }
