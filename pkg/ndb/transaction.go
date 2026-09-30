@@ -346,7 +346,13 @@ func (t *WriteTransaction) Commit() error {
 	t.newNBTRoot = nbtRoot
 	t.newBBTRoot = bbtRoot
 
-	// Sync to ensure data is on disk before phase 2
+	// Persist allocation changes while the header is still marked invalid.
+	// A later transaction must never see live blocks as free.
+	if err := t.amap.WritePages(t.db.file); err != nil {
+		return fmt.Errorf("failed to write allocation maps: %w", err)
+	}
+
+	// Sync to ensure data and allocation maps are on disk before phase 2.
 	if err := t.db.Sync(); err != nil {
 		return fmt.Errorf("sync failed: %w", err)
 	}
