@@ -63,8 +63,13 @@ func BuildBTPage(page *BTPage, format PSTFormat) ([]byte, error) {
 		trailerSize = PageTrailerSizeANSI
 	}
 
-	// Calculate maximum data area
-	dataAreaSize := PageSize - trailerSize - 4 // 4 bytes for header
+	// Calculate maximum entry area. Unicode BTPAGE has a 4-byte
+	// dwPadding field between the 4-byte BTPAGE header and the trailer.
+	paddingSize := 0
+	if format == FormatUnicode {
+		paddingSize = 4
+	}
+	dataAreaSize := PageSize - trailerSize - 4 - paddingSize
 
 	// Serialize entries first
 	var entriesData []byte
@@ -90,9 +95,9 @@ func BuildBTPage(page *BTPage, format PSTFormat) ([]byte, error) {
 	// Copy entries at start
 	copy(data, entriesData)
 
-	// Write header just before trailer
-	// Header is at: PageSize - trailerSize - 4
-	headerOffset := PageSize - trailerSize - 4
+	// Write the BTPAGE header immediately after the entry area. Unicode
+	// reserves an additional 4-byte dwPadding field before PAGETRAILER.
+	headerOffset := PageSize - trailerSize - 4 - paddingSize
 	numEntries := len(page.NBTEntries)
 	if page.Trailer.PageType == PageTypeBBT {
 		numEntries = len(page.BBTEntries)
