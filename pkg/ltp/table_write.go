@@ -33,6 +33,12 @@ type tableRow struct {
 	values map[PropID][]byte
 }
 
+// TableSubnode is a large Table Context value stored outside the HN.
+type TableSubnode struct {
+	NID  util.NodeID
+	Data []byte
+}
+
 func NewTableWriter(format disk.PSTFormat) *TableWriter {
 	heap := CreateTableContextHeap(format)
 	return &TableWriter{
@@ -184,19 +190,40 @@ func (w *TableWriter) DeleteRow(rowID uint32) {
 }
 
 func (w *TableWriter) Build() ([]byte, error) {
+	data, _, err := w.build(false)
+	return data, err
+}
+
+// BuildWithSubnodes builds a table while moving values that cannot fit in a
+// single HN allocation into subnodes. The caller must attach the returned
+// subnodes to the table node.
+func (w *TableWriter) BuildWithSubnodes() ([]byte, []TableSubnode, error) {
+	return w.build(true)
+}
+
+func (w *TableWriter) build(allowSubnodes bool) ([]byte, []TableSubnode, error) {
 	if len(w.columns) == 0 {
-		return nil, fmt.Errorf("table must have at least one column")
+		return nil, nil, fmt.Errorf("table must have at least one column")
 	}
 	if len(w.columns) > 255 {
-		return nil, fmt.Errorf("table has too many columns: %d", len(w.columns))
+		return nil, nil, fmt.Errorf("table has too many columns: %d", len(w.columns))
 	}
+
+	// Build from the logical rows each time. Folder tables are rewritten as
+	// messages are added, and reusing the previous heap would retain stale
+	// allocations and duplicate BTH structures.
+	w.heap = CreateTableContextHeap(w.format)
+	w.rowBTH = CreateRowIndexBTH(w.heap, w.format)
 
 	end4, end2, end1 := w.calculateColumnOffsets()
 	rowDataSize := int(end1)
 	existenceBitmapSize := (len(w.columns) + 7) / 8
 	rowSize := rowDataSize + existenceBitmapSize
 
+	var subnodes []TableSubnode
+	nextSubnodeIndex := uint32(2) // index 1 is reserved for an external RowMatrix
 	rowMatrix := make([]byte, len(w.rows)*rowSize)
+
 	for i, row := range w.rows {
 		rowOffset := i * rowSize
 		existenceBitmap := make([]byte, existenceBitmapSize)
@@ -226,11 +253,23 @@ func (w *TableWriter) Build() ([]byte, error) {
 				continue
 			}
 
-			hid, err := w.heap.Allocate(value)
-			if err != nil {
-				return nil, fmt.Errorf("failed to allocate row value: %w", err)
+			var hnid util.HeapNodeID
+			if len(value) > disk.HeapMaxAllocSize {
+				if !allowSubnodes {
+					return nil, nil, fmt.Errorf("row value too large for heap: %d bytes", len(value))
+				}
+				nid := util.MakeNID(util.NIDTypeLTP, nextSubnodeIndex)
+				nextSubnodeIndex++
+				subnodes = append(subnodes, TableSubnode{NID: nid, Data: append([]byte(nil), value...)})
+				hnid = util.HeapNodeID(nid)
+			} else {
+				hid, err := w.heap.Allocate(value)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to allocate row value: %w", err)
+				}
+				hnid = util.HeapNodeID(hid)
 			}
-			binary.LittleEndian.PutUint32(rowMatrix[valueOffset:valueOffset+4], uint32(hid))
+			binary.LittleEndian.PutUint32(rowMatrix[valueOffset:valueOffset+4], uint32(hnid))
 		}
 
 		copy(rowMatrix[rowOffset+rowDataSize:rowOffset+rowSize], existenceBitmap)
@@ -238,35 +277,45 @@ func (w *TableWriter) Build() ([]byte, error) {
 		indexData := make([]byte, 4)
 		binary.LittleEndian.PutUint32(indexData, uint32(i))
 		if err := w.rowBTH.InsertUint32Key(row.rowID, indexData); err != nil {
-			return nil, fmt.Errorf("failed to insert row %d into BTH: %w", row.rowID, err)
+			return nil, nil, fmt.Errorf("failed to insert row %d into BTH: %w", row.rowID, err)
 		}
 	}
 
 	var rowMatrixHNID util.HeapNodeID
 	if len(rowMatrix) > 0 {
 		if len(rowMatrix) > disk.HeapMaxAllocSize {
-			return nil, fmt.Errorf("row matrix too large for heap: %d bytes", len(rowMatrix))
+			if !allowSubnodes {
+				return nil, nil, fmt.Errorf("row matrix too large for heap: %d bytes", len(rowMatrix))
+			}
+			nid := util.MakeNID(util.NIDTypeLTP, 1)
+			subnodes = append(subnodes, TableSubnode{NID: nid, Data: rowMatrix})
+			rowMatrixHNID = util.HeapNodeID(nid)
+		} else {
+			hid, err := w.heap.Allocate(rowMatrix)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to allocate row matrix: %w", err)
+			}
+			rowMatrixHNID = util.HeapNodeID(hid)
 		}
-		hid, err := w.heap.Allocate(rowMatrix)
-		if err != nil {
-			return nil, fmt.Errorf("failed to allocate row matrix: %w", err)
-		}
-		rowMatrixHNID = util.HeapNodeID(hid)
 	}
 
 	rowBTHHID, err := w.rowBTH.Build()
 	if err != nil {
-		return nil, fmt.Errorf("failed to build row BTH: %w", err)
+		return nil, nil, fmt.Errorf("failed to build row BTH: %w", err)
 	}
 
 	tcInfo := w.buildTCInfo(rowBTHHID, rowMatrixHNID, end4, end2, end1, uint16(rowSize)) //nolint:gosec
 	tcInfoHID, err := w.heap.Allocate(tcInfo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to allocate TCINFO: %w", err)
+		return nil, nil, fmt.Errorf("failed to allocate TCINFO: %w", err)
 	}
 	w.heap.SetRoot(tcInfoHID)
 
-	return w.heap.Build()
+	data, err := w.heap.Build()
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, subnodes, nil
 }
 
 // calculateColumnOffsets lays out 8/4-byte values (including HNIDs), then
