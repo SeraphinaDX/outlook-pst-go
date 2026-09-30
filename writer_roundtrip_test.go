@@ -162,7 +162,6 @@ func TestWriterRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestWriterLargeValuesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "large-values.pst")
 	pst, err := Create(path, disk.FormatUnicode)
