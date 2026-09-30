@@ -317,7 +317,6 @@ func TestWriterLargeContentsTableRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestWriterBatchedTransactionsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "batched.pst")
 	pst, err := Create(path, disk.FormatUnicode)
@@ -366,7 +365,7 @@ func TestWriterBatchedTransactionsRoundTrip(t *testing.T) {
 				SetSubject(fmt.Sprintf("batched message %04d %s", n, strings.Repeat("y", 40))).
 				SetBody("small body")
 			if n == 202 {
-				builder.SetHTMLBody("<html><body>" + strings.Repeat("<p>large batch HTML</p>", 2500) + "</body></html>").
+				builder.SetHTMLBody("<html><body>"+strings.Repeat("<p>large batch HTML</p>", 2500)+"</body></html>").
 					AddAttachmentWithMime("batch-large.bin", bytes.Repeat([]byte{1, 2, 3, 4}, 25000), "application/octet-stream")
 			}
 			if _, err := builder.Build(); err != nil {
