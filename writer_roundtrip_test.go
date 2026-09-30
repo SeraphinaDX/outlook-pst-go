@@ -163,7 +163,6 @@ func TestWriterRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestWriterManyMessagesContentsTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "many-messages.pst")
 	pst, err := Create(path, disk.FormatUnicode)
