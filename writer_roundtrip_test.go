@@ -235,7 +235,6 @@ func TestWriterManyMessagesContentsTable(t *testing.T) {
 	}
 }
 
-
 func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "append-after-reopen.pst")
 	pst, err := Create(path, disk.FormatUnicode)
