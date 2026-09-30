@@ -165,6 +165,11 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		return nil, err
 	}
 
+	// The message-level subnode tree holds recipients, attachments, and any
+	// oversized property values that cannot fit in a single HN allocation.
+	subnodeBuilder := ndb.NewSubnodeBuilder(txn)
+	nextPropertySubnode := uint32(1)
+
 	msgBag := ltp.NewPropertyBagWriter(format)
 	if err := msgBag.SetString(ltp.PidTagMessageClass, "IPM.Note"); err != nil {
 		return nil, err
@@ -252,12 +257,10 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		}
 	}
 
-	msgData, err := msgBag.Build()
+	msgData, err := msgBag.BuildWithSubnodes(subnodeBuilder, &nextPropertySubnode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build message properties: %w", err)
 	}
-
-	subnodeBuilder := ndb.NewSubnodeBuilder(txn)
 
 	if len(b.recipients) > 0 {
 		recipientTable := ltp.CreateRecipientTable(format)
@@ -320,11 +323,19 @@ func (b *MessageBuilder) Build() (*Message, error) {
 			_ = attachBag.SetInt32(ltp.PidTagAttachSize, int32(len(a.data))) //nolint:gosec
 			_ = attachBag.SetString(ltp.PidTagAttachMimeTag, a.mimeType)
 
-			attachData, err := attachBag.Build()
+			// Attachment data can be much larger than an HN allocation. Give
+			// each attachment its own child subnode tree for oversized values.
+			attachSubnodes := ndb.NewSubnodeBuilder(txn)
+			nextAttachPropertySubnode := uint32(1)
+			attachData, err := attachBag.BuildWithSubnodes(attachSubnodes, &nextAttachPropertySubnode)
 			if err != nil {
 				return nil, fmt.Errorf("failed to build attachment %d: %w", i, err)
 			}
-			if err := subnodeBuilder.AddSubnode(attachNID, attachData); err != nil {
+			attachSubBID, err := attachSubnodes.Build()
+			if err != nil {
+				return nil, fmt.Errorf("failed to build attachment %d subnodes: %w", i, err)
+			}
+			if err := subnodeBuilder.AddSubnodeWithSubnodes(attachNID, attachData, attachSubBID); err != nil {
 				return nil, err
 			}
 		}
