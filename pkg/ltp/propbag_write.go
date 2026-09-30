@@ -167,7 +167,7 @@ func (w *PropertyBagWriter) build(subnodes *ndb.SubnodeBuilder, nextIndex *uint3
 				return nil, fmt.Errorf("failed to allocate property 0x%04X: allocation too large: %d bytes (max %d)", id, len(prop.value), disk.HeapMaxAllocSize)
 			}
 			nid := util.MakeNID(util.NIDTypeLTP, *nextIndex)
-			*nextIndex++
+			*nextIndex = *nextIndex + 1
 			if err := subnodes.AddSubnode(nid, prop.value); err != nil {
 				return nil, fmt.Errorf("failed to store property 0x%04X as subnode: %w", id, err)
 			}
