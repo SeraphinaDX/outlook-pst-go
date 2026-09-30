@@ -423,11 +423,9 @@ func addToContentsTable(ctx *WriteContext, folder *Folder, msgNID util.NodeID, s
 		return err
 	}
 
-	data, err := writer.Build()
-	if err != nil {
-		return err
-	}
-	return ndb.UpdateNodeData(ctx.Transaction(), tableNID, data)
+	// The table is kept in memory and flushed once when the transaction commits.
+	_ = tableNID
+	return nil
 }
 
 // DeleteMessage deletes a message from a folder.
