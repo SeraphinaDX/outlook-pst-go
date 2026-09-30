@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
 func TestWriterRoundTrip(t *testing.T) {
@@ -313,6 +314,18 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		_ = pst.Close()
 		t.Fatalf("Commit second batch: %v", err)
 	}
+
+	contentsNID := util.MakeNID(util.NIDTypeContentsTable, inbox.ID().Index())
+	contentsInfo, err := pst.db.LookupNode(contentsNID)
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("lookup contents node after second commit: %v", err)
+	}
+	if _, err := pst.db.LookupBlock(contentsInfo.DataBID); err != nil {
+		_ = pst.Close()
+		t.Fatalf("lookup contents block 0x%X after second commit: %v", contentsInfo.DataBID, err)
+	}
+
 	if err := pst.Close(); err != nil {
 		t.Fatalf("Close second batch: %v", err)
 	}
@@ -322,6 +335,14 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		t.Fatalf("Open final PST: %v", err)
 	}
 	defer func() { _ = pst.Close() }()
+
+	contentsInfo, err = pst.db.LookupNode(contentsNID)
+	if err != nil {
+		t.Fatalf("lookup contents node after final reopen: %v", err)
+	}
+	if _, err := pst.db.LookupBlock(contentsInfo.DataBID); err != nil {
+		t.Fatalf("lookup contents block 0x%X after final reopen: %v", contentsInfo.DataBID, err)
+	}
 
 	root, err = pst.RootFolder()
 	if err != nil {
