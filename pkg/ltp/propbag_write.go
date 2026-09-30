@@ -23,8 +23,17 @@ type PropertyBagWriter struct {
 // propertyData holds property information during building.
 type propertyData struct {
 	propType PropType
-	value    []byte      // For fixed-size: the value; for variable: the data
-	hid      util.HeapID // HID for variable-size data
+	value    []byte          // For fixed-size: the value; for variable: the data
+	hid      util.HeapID     // HID for heap-backed data
+	hnid     util.HeapNodeID // Explicit HID/NID reference when set
+	external bool            // Value is stored in a subnode rather than this heap
+}
+
+// ExternalProperty describes a Property Context value that must live in a subnode.
+type ExternalProperty struct {
+	ID       PropID
+	PropType PropType
+	Data     []byte
 }
 
 // NewPropertyBagWriter creates a new property bag writer.
@@ -122,6 +131,35 @@ func (w *PropertyBagWriter) Delete(id PropID) {
 	delete(w.properties, id)
 }
 
+// ExternalProperties returns values that are too large for a single HN allocation.
+// The PST format requires variable-sized values larger than 3580 bytes to live
+// in a subnode and stores that subnode NID in the PC BTH record.
+func (w *PropertyBagWriter) ExternalProperties() []ExternalProperty {
+	var out []ExternalProperty
+	for id, prop := range w.properties {
+		if len(prop.value) <= disk.HeapMaxAllocSize {
+			continue
+		}
+		out = append(out, ExternalProperty{
+			ID:       id,
+			PropType: prop.propType,
+			Data:     append([]byte(nil), prop.value...),
+		})
+	}
+	return out
+}
+
+// SetSubnodeReference marks an existing property as subnode-backed.
+func (w *PropertyBagWriter) SetSubnodeReference(id PropID, nid util.NodeID) error {
+	prop, ok := w.properties[id]
+	if !ok {
+		return fmt.Errorf("property 0x%04X not found", uint16(id))
+	}
+	prop.external = true
+	prop.hnid = util.HeapNodeID(nid)
+	return nil
+}
+
 // setFixedProperty sets a fixed-size property.
 func (w *PropertyBagWriter) setFixedProperty(id PropID, propType PropType, value []byte) error {
 	w.properties[id] = &propertyData{
@@ -144,6 +182,9 @@ func (w *PropertyBagWriter) setVariableProperty(id PropID, propType PropType, va
 func (w *PropertyBagWriter) Build() ([]byte, error) {
 	// First pass: allocate variable-size data in heap
 	for id, prop := range w.properties {
+		if prop.external {
+			continue
+		}
 		if !prop.propType.IsFixedSize() || len(prop.value) > 4 {
 			// Allocate in heap
 			hid, err := w.heap.Allocate(prop.value)
@@ -172,6 +213,9 @@ func (w *PropertyBagWriter) Build() ([]byte, error) {
 				hnid = binary.LittleEndian.Uint32(prop.value)
 			}
 			binary.LittleEndian.PutUint32(entry[2:6], hnid)
+		} else if prop.external {
+			// Oversized variable values are stored in subnodes.
+			binary.LittleEndian.PutUint32(entry[2:6], uint32(prop.hnid))
 		} else {
 			// Variable-size: store HID
 			binary.LittleEndian.PutUint32(entry[2:6], uint32(prop.hid))
