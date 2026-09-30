@@ -384,7 +384,7 @@ func bbtContains(pst *PST, target util.BlockID) (bool, int, error) {
 
 func bbtPageContains(pst *PST, offset uint64, target uint64) (bool, int, error) {
 	buf := make([]byte, disk.PageSize)
-	n, err := pst.db.File().ReadAt(buf, int64(offset))
+	n, err := pst.db.File().ReadAt(buf, int64(offset)) //nolint:gosec // test offsets come from PST BREF values
 	if err != nil {
 		return false, 0, err
 	}
