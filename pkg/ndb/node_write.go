@@ -11,6 +11,7 @@ import (
 type NodeBuilder struct {
 	txn       *WriteTransaction
 	nidType   util.NIDType
+	nid       util.NodeID
 	parentNID util.NodeID
 	dataBID   util.BlockID
 	subBID    util.BlockID
@@ -23,6 +24,12 @@ func NewNodeBuilder(txn *WriteTransaction, nidType util.NIDType) *NodeBuilder {
 		txn:     txn,
 		nidType: nidType,
 	}
+}
+
+// WithNID sets an explicit node ID. Table nodes use the same nidIndex as their owner.
+func (b *NodeBuilder) WithNID(nid util.NodeID) *NodeBuilder {
+	b.nid = nid
+	return b
 }
 
 // WithParent sets the parent node ID.
@@ -70,6 +77,12 @@ func (b *NodeBuilder) Build() (*NodeInfo, error) {
 	}
 
 	// Create the node
+	if b.nid != 0 {
+		if b.nid.Type() != b.nidType {
+			return nil, fmt.Errorf("explicit NID type 0x%X does not match builder type 0x%X", b.nid.Type(), b.nidType)
+		}
+		return b.txn.CreateNodeWithID(b.nid, b.parentNID, b.dataBID, b.subBID)
+	}
 	return b.txn.CreateNode(b.nidType, b.parentNID, b.dataBID, b.subBID)
 }
 
@@ -181,16 +194,21 @@ func (b *SubnodeBuilder) Build() (util.BlockID, error) {
 // UpdateNodeData updates the data block for an existing node.
 // This creates a new data block and updates the NBT entry.
 func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
-	// Look up existing node
-	info, err := txn.db.LookupNode(nid)
-	if err != nil {
-		return fmt.Errorf("node not found: %w", err)
+	// Newly-created nodes are not visible through the on-disk NBT until commit.
+	// Prefer a pending insert when present so callers can build a folder and add
+	// messages to it in the same transaction.
+	info, pending := txn.btwriter.nbtInserts[nid]
+	var err error
+	if !pending {
+		info, err = txn.db.LookupNode(nid)
+		if err != nil {
+			return fmt.Errorf("node not found: %w", err)
+		}
 	}
 
-	// Delete old data block if present
-	if info.DataBID != 0 {
+	// Delete an old committed data block when replacing an existing node.
+	if !pending && info.DataBID != 0 {
 		if err := txn.DeleteBlock(info.DataBID); err != nil {
-			// Log but continue - orphan block is acceptable
 			_ = err
 		}
 	}
@@ -213,7 +231,11 @@ func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
 		}
 	}
 
-	// Delete old NBT entry and insert updated one
+	if pending {
+		info.DataBID = newBID
+		return txn.btwriter.InsertNode(info)
+	}
+
 	if err := txn.btwriter.DeleteNode(nid); err != nil {
 		return err
 	}
@@ -224,7 +246,6 @@ func UpdateNodeData(txn *WriteTransaction, nid util.NodeID, data []byte) error {
 		SubBID:    info.SubBID,
 		ParentNID: info.ParentNID,
 	}
-
 	return txn.btwriter.InsertNode(newInfo)
 }
 
