@@ -180,7 +180,14 @@ func (m *AMapManager) Allocate(size uint64) (uint64, error) {
 			page.markAllocated(offset, slotsNeeded)
 			m.freeBytes -= alignedSize
 
-			// Record pending allocation
+			// Record pending allocation and keep EOF beyond every live range.
+			// This is especially important while creating a new PST, where
+			// allocations can come from the first AMap before the header has
+			// an established IBFileEOF.
+			end := offset + alignedSize
+			if end > m.fileSize {
+				m.fileSize = end
+			}
 			m.pendingAllocs = append(m.pendingAllocs, allocation{
 				offset: offset,
 				size:   alignedSize,
@@ -452,20 +459,9 @@ func CreateNewAMapManager(format PSTFormat) *AMapManager {
 		},
 	}
 
-	// Mark initial file structures as allocated
-	// Header: 0x0000 - HeaderSize
-	// Reserved: HeaderSize - 0x4200
-	// DList: 0x4200 - 0x4400
-	// First AMap: 0x4400 - 0x4600
-
-	// Calculate slots for initial structures
-	initialSlots := int((FirstAMapPageLocation + PageSize) / BytesPerSlot)
-	for i := 0; i < initialSlots && i < 496*8; i++ {
-		byteIdx := i / 8
-		bitIdx := i % 8
-		page.BitMap[byteIdx] |= (1 << bitIdx)
-	}
-
+	// AMap slot zero describes the first allocatable byte immediately after
+	// this AMap page (0x4600). Header, DList and the AMap page itself are
+	// outside the bitmap's covered data range and must not consume slots.
 	page.countFreeSlots()
 	m.pages = append(m.pages, page)
 	m.calculateFreeSpace()
