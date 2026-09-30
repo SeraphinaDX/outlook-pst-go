@@ -8,6 +8,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/grokify/outlook-pst-go/pkg/disk"
+	"github.com/grokify/outlook-pst-go/pkg/ndb"
 	"github.com/grokify/outlook-pst-go/pkg/util"
 )
 
@@ -23,8 +24,8 @@ type PropertyBagWriter struct {
 // propertyData holds property information during building.
 type propertyData struct {
 	propType PropType
-	value    []byte      // For fixed-size: the value; for variable: the data
-	hid      util.HeapID // HID for variable-size data
+	value    []byte          // For fixed-size: the value; for variable: the data
+	hnid     util.HeapNodeID // HID or subnode NID for indirect data
 }
 
 // NewPropertyBagWriter creates a new property bag writer.
@@ -141,17 +142,44 @@ func (w *PropertyBagWriter) setVariableProperty(id PropID, propType PropType, va
 }
 
 // Build builds the property context and returns the heap data.
+// Properties larger than a single Heap-on-Node allocation require BuildWithSubnodes.
 func (w *PropertyBagWriter) Build() ([]byte, error) {
-	// First pass: allocate variable-size data in heap
+	return w.build(nil, nil)
+}
+
+// BuildWithSubnodes builds the property context and stores oversized property
+// values as LTP subnodes. nextIndex is advanced for every generated subnode NID.
+func (w *PropertyBagWriter) BuildWithSubnodes(subnodes *ndb.SubnodeBuilder, nextIndex *uint32) ([]byte, error) {
+	if subnodes == nil || nextIndex == nil {
+		return nil, fmt.Errorf("subnode builder and index are required")
+	}
+	return w.build(subnodes, nextIndex)
+}
+
+func (w *PropertyBagWriter) build(subnodes *ndb.SubnodeBuilder, nextIndex *uint32) ([]byte, error) {
 	for id, prop := range w.properties {
-		if !prop.propType.IsFixedSize() || len(prop.value) > 4 {
-			// Allocate in heap
-			hid, err := w.heap.Allocate(prop.value)
-			if err != nil {
-				return nil, fmt.Errorf("failed to allocate property 0x%04X: %w", id, err)
-			}
-			prop.hid = hid
+		if prop.propType.IsFixedSize() && len(prop.value) <= 4 {
+			continue
 		}
+
+		if len(prop.value) > disk.HeapMaxAllocSize {
+			if subnodes == nil {
+				return nil, fmt.Errorf("failed to allocate property 0x%04X: allocation too large: %d bytes (max %d)", id, len(prop.value), disk.HeapMaxAllocSize)
+			}
+			nid := util.MakeNID(util.NIDTypeLTP, *nextIndex)
+			*nextIndex = *nextIndex + 1
+			if err := subnodes.AddSubnode(nid, prop.value); err != nil {
+				return nil, fmt.Errorf("failed to store property 0x%04X as subnode: %w", id, err)
+			}
+			prop.hnid = util.HeapNodeID(nid)
+			continue
+		}
+
+		hid, err := w.heap.Allocate(prop.value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate property 0x%04X: %w", id, err)
+		}
+		prop.hnid = util.HeapNodeID(hid)
 	}
 
 	// Second pass: build BTH entries
@@ -173,8 +201,8 @@ func (w *PropertyBagWriter) Build() ([]byte, error) {
 			}
 			binary.LittleEndian.PutUint32(entry[2:6], hnid)
 		} else {
-			// Variable-size: store HID
-			binary.LittleEndian.PutUint32(entry[2:6], uint32(prop.hid))
+			// Indirect value: store either a HID or a subnode NID.
+			binary.LittleEndian.PutUint32(entry[2:6], uint32(prop.hnid))
 		}
 
 		if err := w.bth.InsertUint16Key(uint16(id), entry); err != nil {

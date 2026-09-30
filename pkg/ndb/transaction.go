@@ -398,6 +398,12 @@ func (t *WriteTransaction) finishWrite() error {
 	// Update next block ID
 	t.db.header.UpdateNextBlockID(uint64(t.db.NextBlockID()))
 
+	// Persist allocation-map changes before marking the transaction valid.
+	// Otherwise a later reopen can reuse live block ranges and corrupt data.
+	if err := t.amap.WritePages(t.db.file); err != nil {
+		return fmt.Errorf("failed to write allocation map: %w", err)
+	}
+
 	// Update AMap info
 	t.db.header.Root.CBAMapFree = t.amap.FreeSpace()
 

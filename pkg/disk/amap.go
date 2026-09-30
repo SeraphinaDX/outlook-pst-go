@@ -186,6 +186,9 @@ func (m *AMapManager) Allocate(size uint64) (uint64, error) {
 				size:   alignedSize,
 			})
 
+			if end := offset + alignedSize; end > m.fileSize {
+				m.fileSize = end
+			}
 			return offset, nil
 		}
 	}
@@ -401,6 +404,20 @@ func (p *AMapPage) Serialize() ([]byte, error) {
 	_ = trailerSize // Used for documentation
 
 	return buf, nil
+}
+
+// WritePages serializes the current allocation maps to disk.
+func (m *AMapManager) WritePages(w io.WriterAt) error {
+	for _, page := range m.pages {
+		data, err := page.Serialize()
+		if err != nil {
+			return fmt.Errorf("serialize AMap page at 0x%X: %w", page.Offset, err)
+		}
+		if _, err := w.WriteAt(data, int64(page.Offset)); err != nil { //nolint:gosec
+			return fmt.Errorf("write AMap page at 0x%X: %w", page.Offset, err)
+		}
+	}
+	return nil
 }
 
 // PendingAllocations returns the list of pending allocations.

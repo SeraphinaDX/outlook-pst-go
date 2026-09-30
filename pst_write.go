@@ -206,6 +206,12 @@ func initializePSTStructure(f *os.File, header *disk.Header, opts CreateOptions)
 		return fmt.Errorf("failed to write BBT page: %w", err)
 	}
 
+	// Persist the final allocation map after all initial blocks/pages have
+	// been allocated. Reopening the PST must see those regions as occupied.
+	if err := amap.WritePages(f); err != nil {
+		return fmt.Errorf("failed to write allocation map: %w", err)
+	}
+
 	// Update header with B-tree roots
 	header.Root.BRefNBT = disk.BlockReference{BID: nbtPageOffset, IB: nbtPageOffset}
 	header.Root.BRefBBT = disk.BlockReference{BID: bbtPageOffset, IB: bbtPageOffset}

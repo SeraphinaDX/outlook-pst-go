@@ -267,7 +267,7 @@ func (w *BTWriter) buildNBTTree(entries []disk.NBTLeafEntry, maxPerPage int) (*d
 			return nil, err
 		}
 		leafRefs = append(leafRefs, *ref)
-		leafMaxKeys = append(leafMaxKeys, pageEntries[len(pageEntries)-1].NID)
+		leafMaxKeys = append(leafMaxKeys, pageEntries[0].NID)
 	}
 
 	// Build non-leaf levels until we have a single root
@@ -326,7 +326,7 @@ func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		}
 
 		parentRefs = append(parentRefs, disk.BlockReference{BID: bid, IB: offset})
-		parentMaxKeys = append(parentMaxKeys, maxKeys[end-1])
+		parentMaxKeys = append(parentMaxKeys, maxKeys[i])
 	}
 
 	return w.buildNBTNonleafLevels(parentRefs, parentMaxKeys, level+1)
@@ -473,7 +473,7 @@ func (w *BTWriter) buildBBTTree(entries []disk.BBTLeafEntry, maxPerPage int) (*d
 			return nil, err
 		}
 		leafRefs = append(leafRefs, *ref)
-		leafMaxKeys = append(leafMaxKeys, pageEntries[len(pageEntries)-1].BRef.BID)
+		leafMaxKeys = append(leafMaxKeys, pageEntries[0].BRef.BID)
 	}
 
 	return w.buildBBTNonleafLevels(leafRefs, leafMaxKeys, 1)
@@ -528,7 +528,7 @@ func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		}
 
 		parentRefs = append(parentRefs, disk.BlockReference{BID: bid, IB: offset})
-		parentMaxKeys = append(parentMaxKeys, maxKeys[end-1])
+		parentMaxKeys = append(parentMaxKeys, maxKeys[i])
 	}
 
 	return w.buildBBTNonleafLevels(parentRefs, parentMaxKeys, level+1)
