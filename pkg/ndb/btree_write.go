@@ -253,7 +253,7 @@ func (w *BTWriter) createNBTLeafPage(entries []disk.NBTLeafEntry) (*disk.BlockRe
 func (w *BTWriter) buildNBTTree(entries []disk.NBTLeafEntry, maxPerPage int) (*disk.BlockReference, error) {
 	// Split entries into leaf pages
 	var leafRefs []disk.BlockReference
-	var leafMaxKeys []uint64
+	var leafMinKeys []uint64
 
 	for i := 0; i < len(entries); i += maxPerPage {
 		end := i + maxPerPage
@@ -267,17 +267,17 @@ func (w *BTWriter) buildNBTTree(entries []disk.NBTLeafEntry, maxPerPage int) (*d
 			return nil, err
 		}
 		leafRefs = append(leafRefs, *ref)
-		leafMaxKeys = append(leafMaxKeys, pageEntries[len(pageEntries)-1].NID)
+		leafMinKeys = append(leafMinKeys, pageEntries[0].NID)
 	}
 
-	// Build non-leaf levels until we have a single root
-	return w.buildNBTNonleafLevels(leafRefs, leafMaxKeys, 1)
+	// Intermediate keys are the minimum key contained by each child subtree.
+	return w.buildNBTNonleafLevels(leafRefs, leafMinKeys, 1)
 }
 
 // buildNBTNonleafLevels builds non-leaf levels of the NBT.
 //
 //nolint:dupl // NBT and BBT non-leaf building have same structure but different page types
-func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, maxKeys []uint64, level int) (*disk.BlockReference, error) {
+func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, minKeys []uint64, level int) (*disk.BlockReference, error) {
 	if len(childRefs) == 1 {
 		return &childRefs[0], nil
 	}
@@ -290,7 +290,7 @@ func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 
 	// Create non-leaf entries
 	var parentRefs []disk.BlockReference
-	var parentMaxKeys []uint64
+	var parentMinKeys []uint64
 
 	for i := 0; i < len(childRefs); i += maxEntriesPerPage {
 		end := i + maxEntriesPerPage
@@ -302,7 +302,7 @@ func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		entries := make([]disk.BTNonleafEntry, end-i)
 		for j := i; j < end; j++ {
 			entries[j-i] = disk.BTNonleafEntry{
-				Key: maxKeys[j],
+				Key: minKeys[j],
 				Ref: childRefs[j],
 			}
 		}
@@ -326,10 +326,10 @@ func (w *BTWriter) buildNBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		}
 
 		parentRefs = append(parentRefs, disk.BlockReference{BID: bid, IB: offset})
-		parentMaxKeys = append(parentMaxKeys, maxKeys[end-1])
+		parentMinKeys = append(parentMinKeys, minKeys[i])
 	}
 
-	return w.buildNBTNonleafLevels(parentRefs, parentMaxKeys, level+1)
+	return w.buildNBTNonleafLevels(parentRefs, parentMinKeys, level+1)
 }
 
 // applyBBTChanges applies pending BBT changes.
@@ -373,7 +373,9 @@ func (w *BTWriter) applyBBTChanges() (*disk.BlockReference, error) {
 
 	// Sort by BID
 	sort.Slice(filteredEntries, func(i, j int) bool {
-		return filteredEntries[i].BRef.BID < filteredEntries[j].BRef.BID
+		left := filteredEntries[i].BRef.BID &^ uint64(0x2)
+		right := filteredEntries[j].BRef.BID &^ uint64(0x2)
+		return left < right
 	})
 
 	// Rebuild tree structure
@@ -459,7 +461,7 @@ func (w *BTWriter) createBBTLeafPage(entries []disk.BBTLeafEntry) (*disk.BlockRe
 // buildBBTTree builds a multi-level BBT from entries.
 func (w *BTWriter) buildBBTTree(entries []disk.BBTLeafEntry, maxPerPage int) (*disk.BlockReference, error) {
 	var leafRefs []disk.BlockReference
-	var leafMaxKeys []uint64
+	var leafMinKeys []uint64
 
 	for i := 0; i < len(entries); i += maxPerPage {
 		end := i + maxPerPage
@@ -473,16 +475,16 @@ func (w *BTWriter) buildBBTTree(entries []disk.BBTLeafEntry, maxPerPage int) (*d
 			return nil, err
 		}
 		leafRefs = append(leafRefs, *ref)
-		leafMaxKeys = append(leafMaxKeys, pageEntries[len(pageEntries)-1].BRef.BID)
+		leafMinKeys = append(leafMinKeys, pageEntries[0].BRef.BID&^uint64(0x2))
 	}
 
-	return w.buildBBTNonleafLevels(leafRefs, leafMaxKeys, 1)
+	return w.buildBBTNonleafLevels(leafRefs, leafMinKeys, 1)
 }
 
 // buildBBTNonleafLevels builds non-leaf levels of the BBT.
 //
 //nolint:dupl // NBT and BBT non-leaf building have same structure but different page types
-func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, maxKeys []uint64, level int) (*disk.BlockReference, error) {
+func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, minKeys []uint64, level int) (*disk.BlockReference, error) {
 	if len(childRefs) == 1 {
 		return &childRefs[0], nil
 	}
@@ -494,7 +496,7 @@ func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 	}
 
 	var parentRefs []disk.BlockReference
-	var parentMaxKeys []uint64
+	var parentMinKeys []uint64
 
 	for i := 0; i < len(childRefs); i += maxEntriesPerPage {
 		end := i + maxEntriesPerPage
@@ -505,7 +507,7 @@ func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		entries := make([]disk.BTNonleafEntry, end-i)
 		for j := i; j < end; j++ {
 			entries[j-i] = disk.BTNonleafEntry{
-				Key: maxKeys[j],
+				Key: minKeys[j],
 				Ref: childRefs[j],
 			}
 		}
@@ -528,10 +530,10 @@ func (w *BTWriter) buildBBTNonleafLevels(childRefs []disk.BlockReference, maxKey
 		}
 
 		parentRefs = append(parentRefs, disk.BlockReference{BID: bid, IB: offset})
-		parentMaxKeys = append(parentMaxKeys, maxKeys[end-1])
+		parentMinKeys = append(parentMinKeys, minKeys[i])
 	}
 
-	return w.buildBBTNonleafLevels(parentRefs, parentMaxKeys, level+1)
+	return w.buildBBTNonleafLevels(parentRefs, parentMinKeys, level+1)
 }
 
 // HasChanges returns true if there are pending changes.
