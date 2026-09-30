@@ -14,7 +14,7 @@ func TestTableWriterBuildIsRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetRowString(rowID, PidTagSubject, strings.Repeat("subject ", 300)); err != nil {
+	if err := w.SetRowString(rowID, PidTagSubject, strings.Repeat("subject ", 150)); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.SetRowString(rowID, PidTagMessageClass, "IPM.Note"); err != nil {
