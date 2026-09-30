@@ -111,7 +111,60 @@ func OpenWithMode(filename string, mode OpenMode) (*Database, error) {
 		nextBID:    util.BlockID(header.BidNextB),
 	}
 
+	if mode == OpenModeReadWrite {
+		if err := db.initializeNextNID(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("failed to initialize NID allocator: %w", err)
+		}
+	}
+
 	return db, nil
+}
+
+func (db *Database) initializeNextNID() error {
+	if err := db.loadNBTRoot(); err != nil {
+		return err
+	}
+
+	maxIndex, err := db.maxNIDIndex(db.nbtRoot)
+	if err != nil {
+		return err
+	}
+	db.nextNID = maxIndex
+	return nil
+}
+
+func (db *Database) maxNIDIndex(page *disk.BTPage) (uint32, error) {
+	if page.IsLeaf() {
+		var max uint32
+		for _, entry := range page.NBTEntries {
+			index := util.NodeID(entry.NID).Index() //nolint:gosec // NID is 32-bit by definition
+			if index > max {
+				max = index
+			}
+		}
+		return max, nil
+	}
+
+	var max uint32
+	for _, child := range page.NonleafEntries {
+		data, err := db.readPage(child.Ref.IB)
+		if err != nil {
+			return 0, err
+		}
+		childPage, err := disk.ParseBTPage(data, db.header.Format, disk.PageTypeNBT)
+		if err != nil {
+			return 0, err
+		}
+		childMax, err := db.maxNIDIndex(childPage)
+		if err != nil {
+			return 0, err
+		}
+		if childMax > max {
+			max = childMax
+		}
+	}
+	return max, nil
 }
 
 // Close closes the database.
