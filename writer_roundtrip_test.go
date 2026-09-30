@@ -234,3 +234,114 @@ func TestWriterManyMessagesContentsTable(t *testing.T) {
 		t.Fatalf("message count = %d, want %d", got, count)
 	}
 }
+
+
+func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "append-after-reopen.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	inbox, err := ctx.CreateFolder(root, "Inbox")
+	if err != nil {
+		_ = ctx.Rollback()
+		_ = pst.Close()
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	const firstBatch = 100
+	for i := 0; i < firstBatch; i++ {
+		if _, err := ctx.CreateMessage(inbox).
+			SetSubject(fmt.Sprintf("before reopen %03d", i)).
+			SetBody("body").
+			Build(); err != nil {
+			_ = ctx.Rollback()
+			_ = pst.Close()
+			t.Fatalf("Build first batch message %d: %v", i+1, err)
+		}
+	}
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit first batch: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close first batch: %v", err)
+	}
+
+	pst, err = OpenReadWrite(path)
+	if err != nil {
+		t.Fatalf("OpenReadWrite: %v", err)
+	}
+	root, err = pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("FindSubfolder after reopen: %v", err)
+	}
+	ctx, err = pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite after reopen: %v", err)
+	}
+
+	const secondBatch = 5
+	for i := 0; i < secondBatch; i++ {
+		if _, err := ctx.CreateMessage(inbox).
+			SetSubject(fmt.Sprintf("after reopen %03d", i)).
+			SetBody("body").
+			Build(); err != nil {
+			_ = ctx.Rollback()
+			_ = pst.Close()
+			t.Fatalf("Build second batch message %d: %v", i+1, err)
+		}
+	}
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit second batch: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close second batch: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open final PST: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder final: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		t.Fatalf("FindSubfolder final: %v", err)
+	}
+
+	got := 0
+	for _, iterErr := range inbox.Messages() {
+		if iterErr != nil {
+			t.Fatalf("iterate final messages: %v", iterErr)
+		}
+		got++
+	}
+	want := firstBatch + secondBatch
+	if got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
+	}
+}
