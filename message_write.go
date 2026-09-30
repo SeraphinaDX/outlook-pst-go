@@ -280,12 +280,18 @@ func (b *MessageBuilder) Build() (*Message, error) {
 			}
 			_ = i
 		}
-		recipientData, err := recipientTable.Build()
+		recipientSubnodes := ndb.NewSubnodeBuilder(txn)
+		nextRecipientSubnode := uint32(1)
+		recipientData, err := recipientTable.BuildWithSubnodes(recipientSubnodes, &nextRecipientSubnode)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build recipient table: %w", err)
 		}
+		recipientSubBID, err := recipientSubnodes.Build()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build recipient table subnodes: %w", err)
+		}
 		recipientNID := util.MakeNID(util.NIDTypeRecipientTable, msgNID.Index())
-		if err := subnodeBuilder.AddSubnode(recipientNID, recipientData); err != nil {
+		if err := subnodeBuilder.AddSubnodeWithSubnodes(recipientNID, recipientData, recipientSubBID); err != nil {
 			return nil, err
 		}
 	}
@@ -340,12 +346,18 @@ func (b *MessageBuilder) Build() (*Message, error) {
 			}
 		}
 
-		attachmentData, err := attachmentTable.Build()
+		attachmentTableSubnodes := ndb.NewSubnodeBuilder(txn)
+		nextAttachmentTableSubnode := uint32(1)
+		attachmentData, err := attachmentTable.BuildWithSubnodes(attachmentTableSubnodes, &nextAttachmentTableSubnode)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build attachment table: %w", err)
 		}
+		attachmentTableSubBID, err := attachmentTableSubnodes.Build()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build attachment table subnodes: %w", err)
+		}
 		attachmentTableNID := util.MakeNID(util.NIDTypeAttachmentTable, msgNID.Index())
-		if err := subnodeBuilder.AddSubnode(attachmentTableNID, attachmentData); err != nil {
+		if err := subnodeBuilder.AddSubnodeWithSubnodes(attachmentTableNID, attachmentData, attachmentTableSubBID); err != nil {
 			return nil, err
 		}
 	}
@@ -408,11 +420,8 @@ func addToContentsTable(ctx *WriteContext, folder *Folder, msgNID util.NodeID, s
 		return err
 	}
 
-	data, err := writer.Build()
-	if err != nil {
-		return err
-	}
-	return ndb.UpdateNodeData(ctx.Transaction(), tableNID, data)
+	ctx.markTableDirty(tableNID)
+	return nil
 }
 
 // DeleteMessage deletes a message from a folder.
