@@ -14,6 +14,7 @@ import (
 type Folder struct {
 	pst  *PST
 	node *ndb.Node
+	nid  util.NodeID
 	bag  *ltp.PropertyBag
 
 	// Hierarchy table (lazy loaded)
@@ -37,13 +38,17 @@ func newFolder(pst *PST, node *ndb.Node) (*Folder, error) {
 	return &Folder{
 		pst:  pst,
 		node: node,
+		nid:  node.ID(),
 		bag:  bag,
 	}, nil
 }
 
 // ID returns the folder's node ID.
 func (f *Folder) ID() util.NodeID {
-	return f.node.ID()
+	if f.node != nil {
+		return f.node.ID()
+	}
+	return f.nid
 }
 
 // Name returns the display name of the folder.
@@ -80,7 +85,7 @@ func (f *Folder) PropertyBag() *ltp.PropertyBag {
 func (f *Folder) loadHierarchyTable() error {
 	f.hierarchyOnce.Do(func() {
 		// Hierarchy table NID is folder NID with type changed to hierarchy
-		folderNID := f.node.ID()
+		folderNID := f.ID()
 		hierarchyNID := util.MakeNID(util.NIDTypeHierarchyTable, folderNID.Index())
 
 		// The hierarchy table is a separate NBT entry (not a subnode)
@@ -103,7 +108,7 @@ func (f *Folder) loadHierarchyTable() error {
 func (f *Folder) loadContentsTable() error {
 	f.contentsOnce.Do(func() {
 		// Contents table NID is folder NID with type changed to contents
-		folderNID := f.node.ID()
+		folderNID := f.ID()
 		contentsNID := util.MakeNID(util.NIDTypeContentsTable, folderNID.Index())
 
 		// The contents table is a separate NBT entry (not a subnode)
@@ -258,7 +263,7 @@ func (f *Folder) ContentsTable() (*ltp.Table, error) {
 // Search folders are virtual folders whose contents are determined by search criteria.
 // See [MS-PST] Section 2.4.8.
 func (f *Folder) IsSearchFolder() bool {
-	return f.node.ID().Type() == util.NIDTypeSearchFolder
+	return f.ID().Type() == util.NIDTypeSearchFolder
 }
 
 // AsSearchFolder returns this folder as a SearchFolder if it is one.
