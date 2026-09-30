@@ -270,6 +270,7 @@ func (p *PST) BeginWrite() (*WriteContext, error) {
 		pst:          p,
 		txn:          txn,
 		tableWriters: make(map[util.NodeID]*ltp.TableWriter),
+		dirtyTables:  make(map[util.NodeID]struct{}),
 	}, nil
 }
 
@@ -282,6 +283,9 @@ type WriteContext struct {
 }
 
 func (w *WriteContext) markTableDirty(nid util.NodeID) {
+	if w.dirtyTables == nil {
+		w.dirtyTables = make(map[util.NodeID]struct{})
+	}
 	w.dirtyTables[nid] = struct{}{}
 }
 
