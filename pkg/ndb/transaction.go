@@ -225,22 +225,41 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 	return xblockBID, nil
 }
 
+// AllocateNodeID reserves a new node ID for the requested node type.
+func (t *WriteTransaction) AllocateNodeID(nidType util.NIDType) (util.NodeID, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.state != TransactionStateActive {
+		return 0, errors.New("transaction is not active")
+	}
+
+	t.db.mu.Lock()
+	t.db.nextNID++
+	index := t.db.nextNID
+	t.db.mu.Unlock()
+
+	return util.MakeNID(nidType, index), nil
+}
+
 // CreateNode creates a new node in the NBT.
 func (t *WriteTransaction) CreateNode(nidType util.NIDType, parentNID util.NodeID, dataBID, subBID util.BlockID) (*NodeInfo, error) {
+	nid, err := t.AllocateNodeID(nidType)
+	if err != nil {
+		return nil, err
+	}
+	return t.CreateNodeWithID(nid, parentNID, dataBID, subBID)
+}
+
+// CreateNodeWithID creates a new node using an already selected NID.
+// This is required for PST table nodes whose nidIndex must match their owner.
+func (t *WriteTransaction) CreateNodeWithID(nid util.NodeID, parentNID util.NodeID, dataBID, subBID util.BlockID) (*NodeInfo, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.state != TransactionStateActive {
 		return nil, errors.New("transaction is not active")
 	}
-
-	// Allocate node ID
-	t.db.mu.Lock()
-	t.db.nextNID++
-	index := t.db.nextNID
-	t.db.mu.Unlock()
-
-	nid := util.MakeNID(nidType, index)
 
 	info := &NodeInfo{
 		NID:       nid,
@@ -249,13 +268,11 @@ func (t *WriteTransaction) CreateNode(nidType util.NIDType, parentNID util.NodeI
 		ParentNID: parentNID,
 	}
 
-	// Queue for NBT insert
 	if err := t.btwriter.InsertNode(info); err != nil {
 		return nil, err
 	}
 
 	t.pendingNodes = append(t.pendingNodes, pendingNode{info: info})
-
 	return info, nil
 }
 
