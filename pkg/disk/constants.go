@@ -215,19 +215,20 @@ func (s AMapStatus) String() string {
 
 // Maximum data sizes.
 const (
-	// MaxDataBlockSize is the maximum payload size for a data block (before alignment/trailer).
-	// Unicode: 8192 - 16 (trailer) - 64 (alignment padding worst case) = 8176
-	// But actual max is 8176 bytes of data per [MS-PST] 2.2.2.8.3.1.
-	MaxDataBlockSizeUnicode = 8176
-	MaxDataBlockSizeANSI    = 8180
+	// Data is padded to a 64-byte boundary before the block trailer is added.
+	// Therefore the largest payload that can still fit in an 8192-byte block
+	// is 8128 bytes for both Unicode and ANSI PSTs.
+	MaxDataBlockSizeUnicode = 8128
+	MaxDataBlockSizeANSI    = 8128
 
-	// MaxXBlockEntries is the maximum number of BID entries in an XBLOCK.
-	MaxXBlockEntriesUnicode = 1020 // (8192 - 8 header - 16 trailer) / 8
-	MaxXBlockEntriesANSI    = 2040 // (8192 - 8 header - 12 trailer) / 4
+	// MaxXBlockEntries is bounded by the maximum unaligned internal-block
+	// payload above, not simply 8192 minus the trailer.
+	MaxXBlockEntriesUnicode = 1015 // (8128 - 8 header) / 8
+	MaxXBlockEntriesANSI    = 2030 // (8128 - 8 header) / 4
 
-	// MaxSubnodeLeafEntries is the maximum number of entries in a subnode leaf block.
-	MaxSubnodeLeafEntriesUnicode = 340 // (8192 - 8 header - 16 trailer) / 24
-	MaxSubnodeLeafEntriesANSI    = 680 // (8192 - 4 header - 12 trailer) / 12
+	// MaxSubnodeLeafEntries is likewise bounded by the 8128-byte payload.
+	MaxSubnodeLeafEntriesUnicode = 338 // (8128 - 8 header) / 24
+	MaxSubnodeLeafEntriesANSI    = 677 // (8128 - 4 header) / 12
 )
 
 // B-tree page constants.
