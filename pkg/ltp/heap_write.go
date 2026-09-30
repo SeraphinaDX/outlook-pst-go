@@ -28,7 +28,7 @@ type heapAllocation struct {
 func NewHeapWriter(clientSig byte, format disk.PSTFormat) *HeapWriter {
 	return &HeapWriter{
 		clientSig:   clientSig,
-		nextAllocID: 1, // HID 0 is reserved
+		nextAllocID: 0, // MakeHeapID converts the zero-based allocation index to a non-zero HID
 		format:      format,
 	}
 }
@@ -62,7 +62,7 @@ func (w *HeapWriter) SetRoot(hid util.HeapID) {
 func (w *HeapWriter) Build() ([]byte, error) {
 	// Calculate total size needed
 	headerSize := 12                            // HNHDR size
-	pageMapSize := 2 + len(w.allocations)*2 + 2 // cAlloc(2) + offsets + end marker
+	pageMapSize := 4 + (len(w.allocations)+1)*2 // cAlloc + cFree + allocation offsets/end marker
 
 	// Calculate data size
 	totalDataSize := 0
@@ -110,12 +110,11 @@ func (w *HeapWriter) Build() ([]byte, error) {
 	}
 	offsets[len(w.allocations)] = uint16(currentOffset) // End marker
 
-	// Write page map
-	// cAlloc: number of allocations
-	// rgibAlloc: array of offsets
-	binary.LittleEndian.PutUint16(buf[pageMapOffset:pageMapOffset+2], uint16(len(w.allocations))) //nolint:gosec // G115: allocations bounded by heap capacity
+	// Write page map: cAlloc, cFree, then rgibAlloc[cAlloc+1].
+	binary.LittleEndian.PutUint16(buf[pageMapOffset:pageMapOffset+2], uint16(len(w.allocations))) //nolint:gosec
+	binary.LittleEndian.PutUint16(buf[pageMapOffset+2:pageMapOffset+4], 0)
 	for i, off := range offsets {
-		binary.LittleEndian.PutUint16(buf[pageMapOffset+2+i*2:], off)
+		binary.LittleEndian.PutUint16(buf[pageMapOffset+4+i*2:], off)
 	}
 
 	return buf, nil
