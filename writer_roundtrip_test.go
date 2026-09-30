@@ -47,8 +47,8 @@ func TestWriterRoundTrip(t *testing.T) {
 			}
 
 			sent := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-			wantHTML := "<p>" + strings.Repeat("large html body ", 4000) + "</p>"
-			wantAttachment := bytes.Repeat([]byte{0x5A}, 64*1024)
+			wantHTML := "<p>" + strings.Repeat("large html body ", 12000) + "</p>"
+			wantAttachment := bytes.Repeat([]byte{0x5A}, 128*1024)
 			_, err = ctx.CreateMessage(inbox).
 				SetSubject("MailSalonTools round trip").
 				SetBody("plain body").
