@@ -20,19 +20,15 @@ func CreateFolder(ctx *WriteContext, parent *Folder, name string) (*Folder, erro
 	txn := ctx.Transaction()
 	format := ctx.PST().Format()
 
-	// Create folder property bag
 	folderBag, err := ltp.CreateFolderPropertyBag(format, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create folder properties: %w", err)
 	}
-
-	// Build property data
 	folderData, err := folderBag.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build folder properties: %w", err)
 	}
 
-	// Create the folder node
 	folderInfo, err := ndb.NewNodeBuilder(txn, util.NIDTypeNormalFolder).
 		WithParent(parent.ID()).
 		WithData(folderData).
@@ -41,65 +37,115 @@ func CreateFolder(ctx *WriteContext, parent *Folder, name string) (*Folder, erro
 		return nil, fmt.Errorf("failed to create folder node: %w", err)
 	}
 
-	// Create hierarchy table for subfolders (empty initially)
+	hierarchyNID := util.MakeNID(util.NIDTypeHierarchyTable, folderInfo.NID.Index())
 	hierarchyTable := ltp.CreateHierarchyTable(format)
 	hierarchyData, err := hierarchyTable.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build hierarchy table: %w", err)
 	}
-
-	_, err = ndb.NewNodeBuilder(txn, util.NIDTypeHierarchyTable).
+	if _, err := ndb.NewNodeBuilder(txn, util.NIDTypeHierarchyTable).
+		WithNID(hierarchyNID).
 		WithParent(folderInfo.NID).
 		WithData(hierarchyData).
-		Build()
-	if err != nil {
+		Build(); err != nil {
 		return nil, fmt.Errorf("failed to create hierarchy table node: %w", err)
 	}
+	ctx.tableWriters[hierarchyNID] = hierarchyTable
 
-	// Create contents table for messages (empty initially)
+	contentsNID := util.MakeNID(util.NIDTypeContentsTable, folderInfo.NID.Index())
 	contentsTable := ltp.CreateContentsTable(format)
 	contentsData, err := contentsTable.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build contents table: %w", err)
 	}
-
-	_, err = ndb.NewNodeBuilder(txn, util.NIDTypeContentsTable).
+	if _, err := ndb.NewNodeBuilder(txn, util.NIDTypeContentsTable).
+		WithNID(contentsNID).
 		WithParent(folderInfo.NID).
 		WithData(contentsData).
-		Build()
-	if err != nil {
+		Build(); err != nil {
 		return nil, fmt.Errorf("failed to create contents table node: %w", err)
 	}
+	ctx.tableWriters[contentsNID] = contentsTable
 
-	// Update parent's hierarchy table
 	if err := addToHierarchyTable(ctx, parent, folderInfo.NID, name); err != nil {
 		return nil, fmt.Errorf("failed to update hierarchy table: %w", err)
 	}
 
-	// Create Folder object
 	node, err := ctx.PST().db.GetNode(folderInfo.NID)
 	if err != nil {
-		// Node was just created - build minimal Folder
-		return &Folder{
-			pst: ctx.PST(),
-		}, nil
+		return &Folder{pst: ctx.PST(), nid: folderInfo.NID}, nil
+	}
+	return newFolder(ctx.PST(), node)
+}
+
+func folderTableWriter(ctx *WriteContext, folder *Folder, tableType util.NIDType, create func(disk.PSTFormat) *ltp.TableWriter) (*ltp.TableWriter, util.NodeID, error) {
+	tableNID := util.MakeNID(tableType, folder.ID().Index())
+	if writer, ok := ctx.tableWriters[tableNID]; ok {
+		return writer, tableNID, nil
 	}
 
-	return newFolder(ctx.PST(), node)
+	node, err := ctx.PST().db.GetNode(tableNID)
+	if err == nil {
+		table, tableErr := ltp.NewTable(node)
+		if tableErr != nil {
+			return nil, 0, tableErr
+		}
+		writer, tableErr := ltp.NewTableWriterFromTable(table, ctx.PST().Format())
+		if tableErr != nil {
+			return nil, 0, tableErr
+		}
+		ctx.tableWriters[tableNID] = writer
+		return writer, tableNID, nil
+	}
+
+	writer := create(ctx.PST().Format())
+	data, buildErr := writer.Build()
+	if buildErr != nil {
+		return nil, 0, buildErr
+	}
+	if _, buildErr = ndb.NewNodeBuilder(ctx.Transaction(), tableType).
+		WithNID(tableNID).
+		WithParent(folder.ID()).
+		WithData(data).
+		Build(); buildErr != nil {
+		return nil, 0, buildErr
+	}
+	ctx.tableWriters[tableNID] = writer
+	return writer, tableNID, nil
 }
 
 // addToHierarchyTable adds a folder entry to the parent's hierarchy table.
 func addToHierarchyTable(ctx *WriteContext, parent *Folder, childNID util.NodeID, name string) error {
-	// This would involve:
-	// 1. Reading the parent's hierarchy table node
-	// 2. Adding a new row for the child folder
-	// 3. Writing the updated table back
-	// For simplicity, this is a placeholder that would need full implementation
-	_ = ctx
-	_ = parent
-	_ = childNID
-	_ = name
-	return nil
+	writer, tableNID, err := folderTableWriter(ctx, parent, util.NIDTypeHierarchyTable, ltp.CreateHierarchyTable)
+	if err != nil {
+		return err
+	}
+
+	rowID, err := writer.AddRowWithID(uint32(childNID))
+	if err != nil {
+		return err
+	}
+	if err := writer.SetRowString(rowID, ltp.PidTagDisplayName, name); err != nil {
+		return err
+	}
+	if err := writer.SetRowInt32(rowID, ltp.PidTagContentCount, 0); err != nil {
+		return err
+	}
+	if err := writer.SetRowInt32(rowID, ltp.PidTagContentUnreadCount, 0); err != nil {
+		return err
+	}
+	if err := writer.SetRowBool(rowID, ltp.PidTagSubfolders, false); err != nil {
+		return err
+	}
+	if err := writer.SetRowInt32(rowID, ltp.PidTagDepth, 1); err != nil {
+		return err
+	}
+
+	data, err := writer.Build()
+	if err != nil {
+		return err
+	}
+	return ndb.UpdateNodeData(ctx.Transaction(), tableNID, data)
 }
 
 // DeleteFolder deletes a folder and all its contents recursively.
