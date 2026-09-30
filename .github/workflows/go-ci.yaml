@@ -1,25 +1,53 @@
 name: Go CI
+
 permissions:
   contents: read
+
 on:
   push:
     branches:
       - main
+      - "fix/**"
     paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/go-ci.yaml'
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/go-ci.yaml"
   pull_request:
     branches:
       - main
     paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/go-ci.yaml'
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/go-ci.yaml"
   workflow_dispatch:
 
 jobs:
-  ci:
-    uses: grokify/.github/.github/workflows/go-ci.yaml@main
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -v ./...

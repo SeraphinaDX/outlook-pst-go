@@ -16,6 +16,7 @@ import (
 type Message struct {
 	pst  *PST
 	node *ndb.Node
+	nid  util.NodeID
 	bag  *ltp.PropertyBag
 
 	// Attachment table (lazy loaded)
@@ -39,13 +40,17 @@ func newMessage(pst *PST, node *ndb.Node) (*Message, error) {
 	return &Message{
 		pst:  pst,
 		node: node,
+		nid:  node.ID(),
 		bag:  bag,
 	}, nil
 }
 
 // ID returns the message's node ID.
 func (m *Message) ID() util.NodeID {
-	return m.node.ID()
+	if m.node != nil {
+		return m.node.ID()
+	}
+	return m.nid
 }
 
 // Subject returns the message subject.

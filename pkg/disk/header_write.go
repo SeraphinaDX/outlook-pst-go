@@ -15,11 +15,10 @@ func SerializeHeader(h *Header) ([]byte, error) {
 	return SerializeHeaderANSI(h)
 }
 
-// SerializeHeaderUnicode serializes a Unicode format header (568 bytes).
+// SerializeHeaderUnicode serializes a Unicode format header.
 func SerializeHeaderUnicode(h *Header) ([]byte, error) {
 	buf := make([]byte, HeaderSizeUnicode)
 
-	// Common header fields (0-24)
 	binary.LittleEndian.PutUint32(buf[0:4], h.DWMagic)
 	binary.LittleEndian.PutUint32(buf[4:8], h.DWCRCPartial)
 	binary.LittleEndian.PutUint16(buf[8:10], h.WMagicClient)
@@ -30,44 +29,32 @@ func SerializeHeaderUnicode(h *Header) ([]byte, error) {
 	binary.LittleEndian.PutUint32(buf[16:20], h.DWOpenDBID)
 	binary.LittleEndian.PutUint32(buf[20:24], h.DWOpenClaimID)
 
-	// bidUnused: 24-32 (8 bytes) - reserved, write zeros
-	// bidNextP: 32-40 (8 bytes)
+	// bidUnused: 0x18..0x20
 	binary.LittleEndian.PutUint64(buf[32:40], h.BidNextP)
-	// dwUnique: 40-44 (4 bytes)
 	binary.LittleEndian.PutUint32(buf[40:44], h.DWUnique)
+	// rgnid[32]: 0x2C..0xAC
+	// qwUnused: 0xAC..0xB4
 
-	// rgnid[32]: 44-172 (128 bytes) - node ID counters
-	// For now, write zeros (these are maintained internally by PST)
+	// ROOT is 72 bytes at 0xB4.
+	serializeRootUnicode(buf[180:252], &h.Root)
+	// dwAlign: 0xFC..0x100
+	// rgbFM: 0x100..0x180
+	// rgbFP: 0x180..0x200
 
-	// Root structure: 172-252 (80 bytes)
-	serializeRootUnicode(buf[172:], &h.Root)
+	buf[512] = 0x80
+	buf[513] = byte(h.BCryptMethod)
+	// rgbReserved: 0x202..0x204
+	binary.LittleEndian.PutUint64(buf[516:524], h.BidNextB)
+	// dwCRCFull at 0x20C is filled after CRC calculation.
 
-	// rgbFM: 252-380 (128 bytes) - deprecated FMap, write zeros
-	// rgbFP: 380-508 (128 bytes) - deprecated FPMap, write zeros
-
-	// bSentinel: 508 (1 byte) - must be 0x80
-	buf[508] = 0x80
-
-	// bCryptMethod: 509 (1 byte)
-	buf[509] = byte(h.BCryptMethod)
-
-	// rgbReserved: 510-512 (2 bytes) - write zeros
-
-	// bidNextB: 512-520 (8 bytes)
-	binary.LittleEndian.PutUint64(buf[512:520], h.BidNextB)
-
-	// dwCRCFull: 520-524 (4 bytes) - computed after all other fields
-	// rgbVersionEncoded: 524-527 (3 bytes)
-	// bLockSemaphore: 527 (1 byte)
-	// rgbLock: 528-560 (32 bytes)
-
-	// Compute partial CRC (bytes 8-524)
-	h.DWCRCPartial = ComputeCRC(buf[8:524])
+	// [MS-PST] defines dwCRCPartial over 471 bytes starting at 0x08.
+	h.DWCRCPartial = ComputeCRC(buf[8:479])
 	binary.LittleEndian.PutUint32(buf[4:8], h.DWCRCPartial)
 
-	// Compute full CRC (bytes 8-520)
-	h.DWCRCFull = ComputeCRC(buf[8:520])
-	binary.LittleEndian.PutUint32(buf[520:524], h.DWCRCFull)
+	// dwCRCFull covers 516 bytes starting at 0x08, ending immediately
+	// before dwCRCFull itself at 0x20C.
+	h.DWCRCFull = ComputeCRC(buf[8:524])
+	binary.LittleEndian.PutUint32(buf[524:528], h.DWCRCFull)
 
 	return buf, nil
 }
@@ -119,32 +106,20 @@ func SerializeHeaderANSI(h *Header) ([]byte, error) {
 	return buf, nil
 }
 
-// serializeRootUnicode serializes the Root structure for Unicode format.
+// serializeRootUnicode serializes the 72-byte Unicode ROOT structure.
 func serializeRootUnicode(buf []byte, r *Root) {
-	// Root structure for Unicode (80 bytes):
-	// cOrphans: 0-4 (4 bytes)
 	binary.LittleEndian.PutUint32(buf[0:4], r.COrphans)
-	// padding: 4-8 (4 bytes)
-	// ibFileEOF: 8-16 (8 bytes)
-	binary.LittleEndian.PutUint64(buf[8:16], r.IBFileEOF)
-	// ibAMapLast: 16-24 (8 bytes)
-	binary.LittleEndian.PutUint64(buf[16:24], r.IBAMapLast)
-	// cbAMapFree: 24-32 (8 bytes)
-	binary.LittleEndian.PutUint64(buf[24:32], r.CBAMapFree)
-	// cbPMapFree: 32-40 (8 bytes)
-	binary.LittleEndian.PutUint64(buf[32:40], r.CBPMapFree)
-	// brefNBT: 40-56 (16 bytes) - bid(8) + ib(8)
-	binary.LittleEndian.PutUint64(buf[40:48], r.BRefNBT.BID)
-	binary.LittleEndian.PutUint64(buf[48:56], r.BRefNBT.IB)
-	// brefBBT: 56-72 (16 bytes)
-	binary.LittleEndian.PutUint64(buf[56:64], r.BRefBBT.BID)
-	binary.LittleEndian.PutUint64(buf[64:72], r.BRefBBT.IB)
-	// fAMapValid: 72 (1 byte)
-	buf[72] = r.FAMapValid
-	// bARVec: 73 (1 byte)
-	buf[73] = r.BARVec
-	// cARVec: 74-76 (2 bytes)
-	binary.LittleEndian.PutUint16(buf[74:76], r.CARVec)
+	binary.LittleEndian.PutUint64(buf[4:12], r.IBFileEOF)
+	binary.LittleEndian.PutUint64(buf[12:20], r.IBAMapLast)
+	binary.LittleEndian.PutUint64(buf[20:28], r.CBAMapFree)
+	binary.LittleEndian.PutUint64(buf[28:36], r.CBPMapFree)
+	binary.LittleEndian.PutUint64(buf[36:44], r.BRefNBT.BID)
+	binary.LittleEndian.PutUint64(buf[44:52], r.BRefNBT.IB)
+	binary.LittleEndian.PutUint64(buf[52:60], r.BRefBBT.BID)
+	binary.LittleEndian.PutUint64(buf[60:68], r.BRefBBT.IB)
+	buf[68] = r.FAMapValid
+	buf[69] = r.BARVec
+	binary.LittleEndian.PutUint16(buf[70:72], r.CARVec)
 }
 
 // serializeRootANSI serializes the Root structure for ANSI format.

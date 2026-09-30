@@ -158,10 +158,14 @@ func (b *MessageBuilder) Build() (*Message, error) {
 	txn := b.ctx.Transaction()
 	format := b.ctx.PST().Format()
 
-	// Create message property bag
-	msgBag := ltp.NewPropertyBagWriter(format)
+	// Reserve the message NID before building subnodes. Recipient and
+	// attachment table NIDs share the message's nidIndex.
+	msgNID, err := txn.AllocateNodeID(util.NIDTypeNormalMessage)
+	if err != nil {
+		return nil, err
+	}
 
-	// Set standard message properties
+	msgBag := ltp.NewPropertyBagWriter(format)
 	if err := msgBag.SetString(ltp.PidTagMessageClass, "IPM.Note"); err != nil {
 		return nil, err
 	}
@@ -169,7 +173,6 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		if err := msgBag.SetString(ltp.PidTagSubject, b.subject); err != nil {
 			return nil, err
 		}
-		// Also set normalized subject
 		if err := msgBag.SetString(ltp.PidTagNormalizedSubject, b.subject); err != nil {
 			return nil, err
 		}
@@ -190,7 +193,6 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		}
 	}
 
-	// Set times
 	if err := msgBag.SetTime(ltp.PidTagClientSubmitTime, b.sentTime); err != nil {
 		return nil, err
 	}
@@ -205,7 +207,6 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		return nil, err
 	}
 
-	// Set sender
 	if b.fromName != "" {
 		if err := msgBag.SetString(ltp.PidTagSenderName, b.fromName); err != nil {
 			return nil, err
@@ -220,10 +221,9 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		}
 	}
 
-	// Set message flags
-	flags := int32(1) // MSGFLAG_READ
+	flags := int32(1)
 	if len(b.attachments) > 0 {
-		flags |= 0x10 // MSGFLAG_HASATTACH
+		flags |= 0x10
 	}
 	if err := msgBag.SetInt32(ltp.PidTagMessageFlags, flags); err != nil {
 		return nil, err
@@ -232,119 +232,120 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		return nil, err
 	}
 
-	// Set custom properties
 	for propID, value := range b.properties {
 		switch v := value.(type) {
 		case string:
-			if err := msgBag.SetString(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetString(propID, v)
 		case int32:
-			if err := msgBag.SetInt32(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetInt32(propID, v)
 		case int64:
-			if err := msgBag.SetInt64(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetInt64(propID, v)
 		case bool:
-			if err := msgBag.SetBool(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetBool(propID, v)
 		case time.Time:
-			if err := msgBag.SetTime(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetTime(propID, v)
 		case []byte:
-			if err := msgBag.SetBinary(propID, v); err != nil {
-				return nil, err
-			}
+			err = msgBag.SetBinary(propID, v)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	// Build message data
 	msgData, err := msgBag.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build message properties: %w", err)
 	}
 
-	// Build subnode tree for recipients and attachments
 	subnodeBuilder := ndb.NewSubnodeBuilder(txn)
 
-	// Add recipient table if we have recipients
 	if len(b.recipients) > 0 {
 		recipientTable := ltp.CreateRecipientTable(format)
 		for i, r := range b.recipients {
 			rowID := recipientTable.AddRow()
-			_ = recipientTable.SetRowInt32(rowID, ltp.PidTagRowId, int32(i))
-			_ = recipientTable.SetRowInt32(rowID, ltp.PidTagRecipientType, int32(r.recipientType))
-			_ = recipientTable.SetRowString(rowID, ltp.PidTagDisplayName, r.displayName)
-			_ = recipientTable.SetRowString(rowID, ltp.PidTagEmailAddress, r.emailAddress)
-			_ = recipientTable.SetRowString(rowID, ltp.PidTagAddressType, r.addressType)
+			if err := recipientTable.SetRowInt32(rowID, ltp.PidTagRecipientType, int32(r.recipientType)); err != nil {
+				return nil, err
+			}
+			if err := recipientTable.SetRowString(rowID, ltp.PidTagDisplayName, r.displayName); err != nil {
+				return nil, err
+			}
+			if err := recipientTable.SetRowString(rowID, ltp.PidTagEmailAddress, r.emailAddress); err != nil {
+				return nil, err
+			}
+			if err := recipientTable.SetRowString(rowID, ltp.PidTagAddressType, r.addressType); err != nil {
+				return nil, err
+			}
+			_ = i
 		}
 		recipientData, err := recipientTable.Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build recipient table: %w", err)
 		}
-
-		// Add as subnode with recipient table NID type
-		recipientNID := util.MakeNID(util.NIDTypeRecipientTable, 1)
+		recipientNID := util.MakeNID(util.NIDTypeRecipientTable, msgNID.Index())
 		if err := subnodeBuilder.AddSubnode(recipientNID, recipientData); err != nil {
 			return nil, err
 		}
 	}
 
-	// Add attachment table if we have attachments
 	if len(b.attachments) > 0 {
 		attachmentTable := ltp.CreateAttachmentTable(format)
 		for i, a := range b.attachments {
-			rowID := attachmentTable.AddRow()
-			_ = attachmentTable.SetRowInt32(rowID, ltp.PidTagRowId, int32(i))
-			_ = attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachNumber, int32(i))
-			_ = attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachMethod, int32(a.method))
-			_ = attachmentTable.SetRowString(rowID, ltp.PidTagAttachFilename, a.filename)
-			_ = attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachSize, int32(len(a.data))) //nolint:gosec // G115: attachment size bounded by available memory
-			_ = attachmentTable.SetRowString(rowID, ltp.PidTagAttachMimeTag, a.mimeType)
-
-			// Create attachment node with data
 			attachNID := util.MakeNID(util.NIDTypeAttachment, uint32(i+1))
+			rowID, err := attachmentTable.AddRowWithID(uint32(attachNID))
+			if err != nil {
+				return nil, err
+			}
+			if err := attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachNumber, int32(i)); err != nil {
+				return nil, err
+			}
+			if err := attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachMethod, int32(a.method)); err != nil {
+				return nil, err
+			}
+			if err := attachmentTable.SetRowString(rowID, ltp.PidTagAttachFilename, a.filename); err != nil {
+				return nil, err
+			}
+			if err := attachmentTable.SetRowInt32(rowID, ltp.PidTagAttachSize, int32(len(a.data))); err != nil { //nolint:gosec
+				return nil, err
+			}
+			if err := attachmentTable.SetRowString(rowID, ltp.PidTagAttachMimeTag, a.mimeType); err != nil {
+				return nil, err
+			}
+
 			attachBag := ltp.NewPropertyBagWriter(format)
 			_ = attachBag.SetInt32(ltp.PidTagAttachNumber, int32(i))
 			_ = attachBag.SetInt32(ltp.PidTagAttachMethod, int32(a.method))
 			_ = attachBag.SetString(ltp.PidTagAttachFilename, a.filename)
+			_ = attachBag.SetString(ltp.PidTagAttachLongFilename, a.filename)
 			_ = attachBag.SetBinary(ltp.PidTagAttachDataBinary, a.data)
-			_ = attachBag.SetInt32(ltp.PidTagAttachSize, int32(len(a.data))) //nolint:gosec // G115: attachment size bounded by available memory
+			_ = attachBag.SetInt32(ltp.PidTagAttachSize, int32(len(a.data))) //nolint:gosec
 			_ = attachBag.SetString(ltp.PidTagAttachMimeTag, a.mimeType)
 
 			attachData, err := attachBag.Build()
 			if err != nil {
 				return nil, fmt.Errorf("failed to build attachment %d: %w", i, err)
 			}
-
 			if err := subnodeBuilder.AddSubnode(attachNID, attachData); err != nil {
 				return nil, err
 			}
 		}
 
-		attachTableData, err := attachmentTable.Build()
+		attachmentData, err := attachmentTable.Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to build attachment table: %w", err)
 		}
-
-		attachTableNID := util.MakeNID(util.NIDTypeAttachmentTable, 1)
-		if err := subnodeBuilder.AddSubnode(attachTableNID, attachTableData); err != nil {
+		attachmentTableNID := util.MakeNID(util.NIDTypeAttachmentTable, msgNID.Index())
+		if err := subnodeBuilder.AddSubnode(attachmentTableNID, attachmentData); err != nil {
 			return nil, err
 		}
 	}
 
-	// Build subnode block
 	subBID, err := subnodeBuilder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build subnodes: %w", err)
 	}
 
-	// Create message node
 	msgInfo, err := ndb.NewNodeBuilder(txn, util.NIDTypeNormalMessage).
+		WithNID(msgNID).
 		WithParent(b.folder.ID()).
 		WithData(msgData).
 		WithSubnodeBID(subBID).
@@ -353,31 +354,54 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		return nil, fmt.Errorf("failed to create message node: %w", err)
 	}
 
-	// Update folder's contents table
-	if err := addToContentsTable(b.ctx, b.folder, msgInfo.NID, b.subject, b.sentTime); err != nil {
+	if err := addToContentsTable(b.ctx, b.folder, msgInfo.NID, b.subject, b.sentTime, flags, len(b.attachments) > 0); err != nil {
 		return nil, fmt.Errorf("failed to update contents table: %w", err)
 	}
 
-	// Create Message object
 	node, err := b.ctx.PST().db.GetNode(msgInfo.NID)
 	if err != nil {
-		// Node just created - return minimal Message
-		return &Message{pst: b.ctx.PST()}, nil
+		return &Message{pst: b.ctx.PST(), nid: msgInfo.NID}, nil
 	}
-
 	return newMessage(b.ctx.PST(), node)
 }
 
 // addToContentsTable adds a message entry to the folder's contents table.
-func addToContentsTable(ctx *WriteContext, folder *Folder, msgNID util.NodeID, subject string, sentTime time.Time) error {
-	// This would involve updating the folder's contents table
-	// Placeholder for full implementation
-	_ = ctx
-	_ = folder
-	_ = msgNID
-	_ = subject
-	_ = sentTime
-	return nil
+func addToContentsTable(ctx *WriteContext, folder *Folder, msgNID util.NodeID, subject string, sentTime time.Time, flags int32, hasAttachments bool) error {
+	writer, tableNID, err := folderTableWriter(ctx, folder, util.NIDTypeContentsTable, ltp.CreateContentsTable)
+	if err != nil {
+		return err
+	}
+
+	rowID, err := writer.AddRowWithID(uint32(msgNID))
+	if err != nil {
+		return err
+	}
+	if subject != "" {
+		if err := writer.SetRowString(rowID, ltp.PidTagSubject, subject); err != nil {
+			return err
+		}
+	}
+	if err := writer.SetRowString(rowID, ltp.PidTagMessageClass, "IPM.Note"); err != nil {
+		return err
+	}
+	if err := writer.SetRowTime(rowID, ltp.PidTagClientSubmitTime, ltp.TimeToFileTime(sentTime)); err != nil {
+		return err
+	}
+	if err := writer.SetRowInt32(rowID, ltp.PidTagMessageSize, 0); err != nil {
+		return err
+	}
+	if err := writer.SetRowInt32(rowID, ltp.PidTagMessageFlags, flags); err != nil {
+		return err
+	}
+	if err := writer.SetRowBool(rowID, ltp.PidTagHasAttachments, hasAttachments); err != nil {
+		return err
+	}
+
+	data, err := writer.Build()
+	if err != nil {
+		return err
+	}
+	return ndb.UpdateNodeData(ctx.Transaction(), tableNID, data)
 }
 
 // DeleteMessage deletes a message from a folder.
