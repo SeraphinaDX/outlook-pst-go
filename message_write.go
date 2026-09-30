@@ -252,12 +252,15 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		}
 	}
 
+	subnodeBuilder := ndb.NewSubnodeBuilder(txn)
+	if err := spillLargeProperties(msgBag, subnodeBuilder); err != nil {
+		return nil, fmt.Errorf("failed to externalize message properties: %w", err)
+	}
+
 	msgData, err := msgBag.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build message properties: %w", err)
 	}
-
-	subnodeBuilder := ndb.NewSubnodeBuilder(txn)
 
 	if len(b.recipients) > 0 {
 		recipientTable := ltp.CreateRecipientTable(format)
@@ -320,11 +323,19 @@ func (b *MessageBuilder) Build() (*Message, error) {
 			_ = attachBag.SetInt32(ltp.PidTagAttachSize, int32(len(a.data))) //nolint:gosec
 			_ = attachBag.SetString(ltp.PidTagAttachMimeTag, a.mimeType)
 
+			attachSubnodes := ndb.NewSubnodeBuilder(txn)
+			if err := spillLargeProperties(attachBag, attachSubnodes); err != nil {
+				return nil, fmt.Errorf("failed to externalize attachment %d properties: %w", i, err)
+			}
 			attachData, err := attachBag.Build()
 			if err != nil {
 				return nil, fmt.Errorf("failed to build attachment %d: %w", i, err)
 			}
-			if err := subnodeBuilder.AddSubnode(attachNID, attachData); err != nil {
+			attachSubBID, err := attachSubnodes.Build()
+			if err != nil {
+				return nil, fmt.Errorf("failed to build attachment %d subnodes: %w", i, err)
+			}
+			if err := subnodeBuilder.AddSubnodeWithSubnodes(attachNID, attachData, attachSubBID); err != nil {
 				return nil, err
 			}
 		}
@@ -363,6 +374,21 @@ func (b *MessageBuilder) Build() (*Message, error) {
 		return &Message{pst: b.ctx.PST(), nid: msgInfo.NID}, nil
 	}
 	return newMessage(b.ctx.PST(), node)
+}
+
+func spillLargeProperties(bag *ltp.PropertyBagWriter, subnodes *ndb.SubnodeBuilder) error {
+	for _, prop := range bag.ExternalProperties() {
+		// Subnode NIDs are scoped to their parent node, so deriving the LTP
+		// nidIndex from the property ID gives a stable unique reference.
+		nid := util.MakeNID(util.NIDTypeLTP, uint32(prop.ID))
+		if err := subnodes.AddSubnode(nid, prop.Data); err != nil {
+			return fmt.Errorf("property 0x%04X: %w", uint16(prop.ID), err)
+		}
+		if err := bag.SetSubnodeReference(prop.ID, nid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // addToContentsTable adds a message entry to the folder's contents table.
