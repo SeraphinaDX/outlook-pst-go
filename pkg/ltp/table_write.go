@@ -184,6 +184,12 @@ func (w *TableWriter) DeleteRow(rowID uint32) {
 }
 
 func (w *TableWriter) Build() ([]byte, error) {
+	// Build is intentionally repeatable. Folder contents/hierarchy tables are
+	// rebuilt after each mutation; carrying the previous heap forward would
+	// retain stale row values and make heap usage grow quadratically.
+	w.heap = CreateTableContextHeap(w.format)
+	w.rowBTH = CreateRowIndexBTH(w.heap, w.format)
+
 	if len(w.columns) == 0 {
 		return nil, fmt.Errorf("table must have at least one column")
 	}
