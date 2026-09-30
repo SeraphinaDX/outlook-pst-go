@@ -2,6 +2,7 @@ package outlookpst
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,5 +160,77 @@ func TestWriterRoundTrip(t *testing.T) {
 				t.Fatalf("recipients did not survive round trip: to=%v cc=%v", toSeen, ccSeen)
 			}
 		})
+	}
+}
+
+func TestWriterManyMessagesContentsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "many-messages.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	inbox, err := ctx.CreateFolder(root, "Inbox")
+	if err != nil {
+		_ = ctx.Rollback()
+		_ = pst.Close()
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	const count = 20
+	for i := 0; i < count; i++ {
+		subject := strings.Repeat("long subject segment ", 60) + fmt.Sprintf(" #%02d", i)
+		if _, err := ctx.CreateMessage(inbox).
+			SetSubject(subject).
+			SetBody("body").
+			Build(); err != nil {
+			_ = ctx.Rollback()
+			_ = pst.Close()
+			t.Fatalf("Build message %d: %v", i+1, err)
+		}
+	}
+
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		t.Fatalf("FindSubfolder: %v", err)
+	}
+
+	got := 0
+	for _, iterErr := range inbox.Messages() {
+		if iterErr != nil {
+			t.Fatalf("iterate messages: %v", iterErr)
+		}
+		got++
+	}
+	if got != count {
+		t.Fatalf("message count = %d, want %d", got, count)
 	}
 }

@@ -9,12 +9,11 @@ import (
 )
 
 // HeapWriter manages heap allocations within a node.
-// It builds a Heap-on-Node (HN) structure for property storage.
+// It builds a Heap-on-Node (HN) structure for property and table storage.
 type HeapWriter struct {
-	clientSig   byte // Client signature (PC=0xBC, TC=0x7C, BTH=0xB5)
+	clientSig   byte
 	rootHID     util.HeapID
 	allocations []heapAllocation
-	nextAllocID uint16
 	format      disk.PSTFormat
 }
 
@@ -27,29 +26,72 @@ type heapAllocation struct {
 // NewHeapWriter creates a new heap writer.
 func NewHeapWriter(clientSig byte, format disk.PSTFormat) *HeapWriter {
 	return &HeapWriter{
-		clientSig:   clientSig,
-		nextAllocID: 0, // MakeHeapID converts the zero-based allocation index to a non-zero HID
-		format:      format,
+		clientSig: clientSig,
+		format:    format,
 	}
 }
 
 // Allocate allocates space in the heap and returns the HID.
+//
+// Heap allocations are packed into HN pages. A HID identifies both the page
+// and the allocation within that page, so once one page is full we can move
+// to the next page without changing callers.
 func (w *HeapWriter) Allocate(data []byte) (util.HeapID, error) {
 	if len(data) > disk.HeapMaxAllocSize {
 		return 0, fmt.Errorf("allocation too large: %d bytes (max %d)", len(data), disk.HeapMaxAllocSize)
 	}
 
-	// Create HID: bits 0-4 reserved, bits 5-15 block index, bits 16-31 alloc index
-	// For simple single-block heaps, block index is always 0
-	hid := util.MakeHeapID(0, w.nextAllocID)
-	w.nextAllocID++
+	pageIndex := uint16(0)
+	allocIndex := uint16(0)
+	if len(w.allocations) > 0 {
+		last := w.allocations[len(w.allocations)-1].hid
+		pageIndex = last.PageIndex()
+		allocIndex = last.AllocIndex() + 1
+	}
 
+	if !w.fitsOnPage(pageIndex, len(data), int(allocIndex)+1) {
+		if pageIndex == ^uint16(0) {
+			return 0, fmt.Errorf("heap has too many pages")
+		}
+		pageIndex++
+		allocIndex = 0
+		if !w.fitsOnPage(pageIndex, len(data), 1) {
+			return 0, fmt.Errorf("allocation does not fit on empty heap page: %d bytes", len(data))
+		}
+	}
+
+	hid := util.MakeHeapID(pageIndex, allocIndex)
 	w.allocations = append(w.allocations, heapAllocation{
 		hid:  hid,
-		data: data,
+		data: append([]byte(nil), data...),
 	})
-
 	return hid, nil
+}
+
+func (w *HeapWriter) fitsOnPage(pageIndex uint16, newDataSize, newAllocCount int) bool {
+	headerSize := 2
+	if pageIndex == 0 {
+		headerSize = 12
+	}
+
+	dataSize := 0
+	for _, alloc := range w.allocations {
+		if alloc.hid.PageIndex() == pageIndex {
+			dataSize += len(alloc.data)
+		}
+	}
+
+	// HNPAGEMAP = cAlloc(2) + cFree(2) + rgibAlloc[cAlloc+1].
+	pageMapSize := 4 + (newAllocCount+1)*2
+	total := headerSize + dataSize + newDataSize + pageMapSize
+	return total <= w.maxPageSize()
+}
+
+func (w *HeapWriter) maxPageSize() int {
+	if w.format == disk.FormatANSI {
+		return disk.MaxDataBlockSizeANSI
+	}
+	return disk.MaxDataBlockSizeUnicode
 }
 
 // SetRoot sets the root HID for the heap.
@@ -57,61 +99,83 @@ func (w *HeapWriter) SetRoot(hid util.HeapID) {
 	w.rootHID = hid
 }
 
-// Build builds the heap data block.
-// Returns the complete heap block data ready for writing.
+// Build serializes the complete Heap-on-Node.
+//
+// When the heap spans multiple pages, every page except the final page is
+// padded to the PST data-block payload size. WriteExtendedBlockData therefore
+// preserves HN page boundaries exactly, and HeapOnNode can later address them
+// using the block index encoded in each HID.
 func (w *HeapWriter) Build() ([]byte, error) {
-	// Calculate total size needed
-	headerSize := 12                            // HNHDR size
-	pageMapSize := 4 + (len(w.allocations)+1)*2 // cAlloc + cFree + allocation offsets/end marker
+	maxPage := uint16(0)
+	if len(w.allocations) > 0 {
+		maxPage = w.allocations[len(w.allocations)-1].hid.PageIndex()
+	}
 
-	// Calculate data size
+	var result []byte
+	for pageIndex := uint16(0); ; pageIndex++ {
+		pageAllocs := make([]heapAllocation, 0)
+		for _, alloc := range w.allocations {
+			if alloc.hid.PageIndex() == pageIndex {
+				pageAllocs = append(pageAllocs, alloc)
+			}
+		}
+
+		page, err := w.buildPage(pageIndex, pageAllocs, pageIndex < maxPage)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, page...)
+
+		if pageIndex == maxPage {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (w *HeapWriter) buildPage(pageIndex uint16, allocs []heapAllocation, pad bool) ([]byte, error) {
+	headerSize := 2
+	if pageIndex == 0 {
+		headerSize = 12
+	}
+
 	totalDataSize := 0
-	for _, alloc := range w.allocations {
+	for _, alloc := range allocs {
 		totalDataSize += len(alloc.data)
 	}
-
-	// Total size (excluding page map at end)
-	totalSize := headerSize + totalDataSize + pageMapSize
-
-	// Check if it fits in a single block
-	maxSize := disk.MaxDataBlockSizeUnicode
-	if w.format == disk.FormatANSI {
-		maxSize = disk.MaxDataBlockSizeANSI
-	}
-	if totalSize > maxSize {
-		return nil, fmt.Errorf("heap too large for single block: %d bytes", totalSize)
+	pageMapSize := 4 + (len(allocs)+1)*2
+	usedSize := headerSize + totalDataSize + pageMapSize
+	if usedSize > w.maxPageSize() {
+		return nil, fmt.Errorf("heap page %d too large: %d bytes", pageIndex, usedSize)
 	}
 
-	// Allocate buffer
-	buf := make([]byte, totalSize)
-
-	// Write HNHDR (heap header) - See [MS-PST] Section 2.3.1.2
-	// ibHnpm: 0-2 (2 bytes) - Offset to page map
-	// bSig: 2 (1 byte) - Heap signature (0xEC)
-	// bClientSig: 3 (1 byte) - Client signature
-	// hidUserRoot: 4-8 (4 bytes) - Root HID
-	// rgbFillLevel: 8-12 (4 bytes) - Fill levels
+	pageSize := usedSize
+	if pad {
+		pageSize = w.maxPageSize()
+	}
+	buf := make([]byte, pageSize)
 
 	pageMapOffset := headerSize + totalDataSize
-	binary.LittleEndian.PutUint16(buf[0:2], uint16(pageMapOffset))
-	buf[2] = disk.HeapSignature // 0xEC
-	buf[3] = w.clientSig
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(w.rootHID))
-	// Fill levels left as zero (block 0 will be partially filled)
+	binary.LittleEndian.PutUint16(buf[0:2], uint16(pageMapOffset)) //nolint:gosec
+	if pageIndex == 0 {
+		buf[2] = disk.HeapSignature
+		buf[3] = w.clientSig
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(w.rootHID))
+	}
 
-	// Write allocations and build page map
 	currentOffset := headerSize
-	offsets := make([]uint16, len(w.allocations)+1)
-
-	for i, alloc := range w.allocations {
-		offsets[i] = uint16(currentOffset)
+	offsets := make([]uint16, len(allocs)+1)
+	for i, alloc := range allocs {
+		if alloc.hid.AllocIndex() != uint16(i) { //nolint:gosec
+			return nil, fmt.Errorf("non-contiguous heap allocation index on page %d", pageIndex)
+		}
+		offsets[i] = uint16(currentOffset) //nolint:gosec
 		copy(buf[currentOffset:], alloc.data)
 		currentOffset += len(alloc.data)
 	}
-	offsets[len(w.allocations)] = uint16(currentOffset) // End marker
+	offsets[len(allocs)] = uint16(currentOffset) //nolint:gosec
 
-	// Write page map: cAlloc, cFree, then rgibAlloc[cAlloc+1].
-	binary.LittleEndian.PutUint16(buf[pageMapOffset:pageMapOffset+2], uint16(len(w.allocations))) //nolint:gosec
+	binary.LittleEndian.PutUint16(buf[pageMapOffset:pageMapOffset+2], uint16(len(allocs))) //nolint:gosec
 	binary.LittleEndian.PutUint16(buf[pageMapOffset+2:pageMapOffset+4], 0)
 	for i, off := range offsets {
 		binary.LittleEndian.PutUint16(buf[pageMapOffset+4+i*2:], off)
