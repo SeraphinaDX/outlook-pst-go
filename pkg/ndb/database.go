@@ -141,7 +141,7 @@ func (db *Database) maxNIDIndex(page *disk.BTPage) (uint32, error) {
 	if page.IsLeaf() {
 		var maxIndex uint32
 		for _, entry := range page.NBTEntries {
-			index := util.NodeID(entry.NID).Index()
+			index := util.NodeID(entry.NID).Index() //nolint:gosec // NIDs are 32-bit by PST format definition
 			if index > maxIndex {
 				maxIndex = index
 			}
