@@ -403,6 +403,27 @@ func (p *AMapPage) Serialize() ([]byte, error) {
 	return buf, nil
 }
 
+// WritePages persists the allocation maps managed by this instance.
+// A transaction must write these pages before marking the PST allocation map
+// valid, otherwise a later writer can reuse blocks that are still live.
+func (m *AMapManager) WritePages(w io.WriterAt) error {
+	for _, page := range m.pages {
+		data, err := page.Serialize()
+		if err != nil {
+			return fmt.Errorf("serialize AMap page at 0x%X: %w", page.Offset, err)
+		}
+		n, err := w.WriteAt(data, int64(page.Offset)) //nolint:gosec // PST offsets are bounded by format
+		if err != nil {
+			return fmt.Errorf("write AMap page at 0x%X: %w", page.Offset, err)
+		}
+		if n != len(data) {
+			return fmt.Errorf("short AMap write at 0x%X: wrote %d of %d bytes", page.Offset, n, len(data))
+		}
+	}
+	m.ClearPending()
+	return nil
+}
+
 // PendingAllocations returns the list of pending allocations.
 func (m *AMapManager) PendingAllocations() []allocation {
 	return m.pendingAllocs
