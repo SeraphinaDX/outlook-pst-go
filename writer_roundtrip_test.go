@@ -419,7 +419,6 @@ func bbtPageContains(pst *PST, offset uint64, target uint64) (bool, int, error) 
 	return false, total, nil
 }
 
-
 func TestWriterXXBlockAttachmentRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "xxblock-attachment.pst")
 	pst, err := Create(path, disk.FormatUnicode)
