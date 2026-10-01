@@ -177,12 +177,15 @@ func (b *SubnodeBuilder) Build() (util.BlockID, error) {
 		return 0, fmt.Errorf("failed to build subnode block: %w", err)
 	}
 
-	// Queue for writing
+	// Queue only the unaligned payload. Commit is responsible for adding
+	// alignment and the block trailer; queueing the already-built disk block
+	// here would add a second trailer and overrun the AMap allocation.
+	payload := append([]byte(nil), blockData[:dataSize]...)
 	b.txn.pendingBlocks = append(b.txn.pendingBlocks, pendingBlock{
 		bid:    bid,
 		offset: offset,
-		data:   blockData,
-		size:   uint16(len(blockData)), //nolint:gosec // G115: block size bounded by MaxBlockSize
+		data:   payload,
+		size:   uint16(dataSize), //nolint:gosec // G115: data size bounded by MaxDataSize
 	})
 
 	// Register in BBT
