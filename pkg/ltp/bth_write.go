@@ -226,7 +226,11 @@ func (w *BTHWriter) buildIntermediateLevel(childHIDs []util.HeapID, maxKeys [][]
 		header[0] = 0xB5
 		header[1] = w.keySize
 		header[2] = w.dataSize
-		header[3] = byte(level) //nolint:gosec // G115: BTH level bounded by tree depth
+		// level counts the recursion step that produced this child. The child
+		// itself is the root index node, so bIdxLevels is one less. For the
+		// common split case (leaf blocks -> one index block), level is 2 here
+		// and the on-disk BTH must advertise exactly one intermediate level.
+		header[3] = byte(level - 1) //nolint:gosec // BTH depth is bounded and level >= 1
 		binary.LittleEndian.PutUint32(header[4:8], uint32(childHIDs[0]))
 
 		headerHID, err := w.heap.Allocate(header)
