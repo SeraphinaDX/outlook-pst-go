@@ -204,7 +204,7 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 
 	queueExtended := func(level byte, bids []uint64, totalSize uint32) (util.BlockID, error) {
 		dataSize := 8 + len(bids)*bidSize
-		diskSize := disk.CalculateBlockDiskSize(uint64(dataSize), format)
+		diskSize := disk.CalculateBlockDiskSize(uint64(dataSize), format) //nolint:gosec // dataSize is bounded by one extended-block payload
 		bid := t.db.AllocateInternalBlockID()
 		offset, err := t.amap.Allocate(diskSize)
 		if err != nil {
