@@ -260,7 +260,7 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		t.Fatalf("CreateFolder: %v", err)
 	}
 
-	const firstBatch = 100
+	const firstBatch = 500
 	for i := 0; i < firstBatch; i++ {
 		if _, err := ctx.CreateMessage(inbox).
 			SetSubject(fmt.Sprintf("before reopen %03d", i)).
@@ -308,7 +308,7 @@ func TestWriterAppendAfterReopenKeepsUniqueNIDs(t *testing.T) {
 		t.Fatalf("BeginWrite after reopen: %v", err)
 	}
 
-	const secondBatch = 30
+	const secondBatch = 5
 	for i := 0; i < secondBatch; i++ {
 		if _, err := ctx.CreateMessage(inbox).
 			SetSubject(fmt.Sprintf("after reopen %03d", i)).
