@@ -418,3 +418,103 @@ func bbtPageContains(pst *PST, offset uint64, target uint64) (bool, int, error) 
 	}
 	return false, total, nil
 }
+
+func TestWriterXXBlockAttachmentRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xxblock-attachment.pst")
+	pst, err := Create(path, disk.FormatUnicode)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root, err := pst.RootFolder()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("RootFolder: %v", err)
+	}
+	ctx, err := pst.BeginWrite()
+	if err != nil {
+		_ = pst.Close()
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	inbox, err := ctx.CreateFolder(root, "Inbox")
+	if err != nil {
+		_ = ctx.Rollback()
+		_ = pst.Close()
+		t.Fatalf("CreateFolder: %v", err)
+	}
+
+	// One more data block than a Unicode XBLOCK can reference forces an
+	// XXBLOCK with multiple XBLOCK children.
+	attachmentSize := (disk.MaxXBlockEntriesUnicode + 1) * disk.MaxDataBlockSizeUnicode
+	wantAttachment := bytes.Repeat([]byte{0xA7}, attachmentSize)
+
+	_, err = ctx.CreateMessage(inbox).
+		SetSubject("XXBLOCK attachment").
+		SetBody("large attachment").
+		AddAttachmentWithMime("large.bin", wantAttachment, "application/octet-stream").
+		Build()
+	if err != nil {
+		_ = ctx.Rollback()
+		_ = pst.Close()
+		t.Fatalf("Build message: %v", err)
+	}
+
+	if err := ctx.Commit(); err != nil {
+		_ = pst.Close()
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := pst.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	pst, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open round-trip PST: %v", err)
+	}
+	defer func() { _ = pst.Close() }()
+
+	root, err = pst.RootFolder()
+	if err != nil {
+		t.Fatalf("RootFolder after reopen: %v", err)
+	}
+	inbox, err = root.FindSubfolder("Inbox")
+	if err != nil {
+		t.Fatalf("FindSubfolder after reopen: %v", err)
+	}
+
+	var got *Message
+	for msg, iterErr := range inbox.Messages() {
+		if iterErr != nil {
+			t.Fatalf("iterate messages: %v", iterErr)
+		}
+		got = msg
+		break
+	}
+	if got == nil {
+		t.Fatal("no message found after reopen")
+	}
+
+	var attachmentSeen bool
+	for attachment, iterErr := range got.Attachments() {
+		if iterErr != nil {
+			t.Fatalf("iterate attachments: %v", iterErr)
+		}
+		name, err := attachment.Filename()
+		if err != nil {
+			t.Fatalf("attachment filename: %v", err)
+		}
+		data, err := attachment.Data()
+		if err != nil {
+			t.Fatalf("attachment data: %v", err)
+		}
+		if name == "large.bin" {
+			if !bytes.Equal(data, wantAttachment) {
+				t.Fatalf("attachment bytes differ: got=%d want=%d", len(data), len(wantAttachment))
+			}
+			attachmentSeen = true
+		}
+	}
+	if !attachmentSeen {
+		t.Fatal("XXBLOCK attachment did not survive round trip")
+	}
+}
