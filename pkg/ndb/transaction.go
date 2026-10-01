@@ -152,7 +152,9 @@ func (t *WriteTransaction) WriteBlockData(data []byte) (util.BlockID, error) {
 }
 
 // WriteExtendedBlockData writes data that may span multiple blocks.
-// For data larger than max block size, creates XBLOCK/XXBLOCK structures.
+// Large values use an XBLOCK (level 1). Values whose data-block list no
+// longer fits in one XBLOCK use an XXBLOCK (level 2) that points to multiple
+// XBLOCKs, as required by [MS-PST] 2.2.2.8.3.
 func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -160,13 +162,20 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 	if t.state != TransactionStateActive {
 		return 0, errors.New("transaction is not active")
 	}
-
-	maxSize := disk.MaxDataBlockSizeUnicode
-	if t.db.Format() == disk.FormatANSI {
-		maxSize = disk.MaxDataBlockSizeANSI
+	if uint64(len(data)) > uint64(^uint32(0)) {
+		return 0, fmt.Errorf("extended data too large: %d bytes (max %d)", len(data), uint64(^uint32(0)))
 	}
 
-	// If data fits in single block, use simple write
+	format := t.db.Format()
+	maxSize := disk.MaxDataBlockSizeUnicode
+	maxEntries := disk.MaxXBlockEntriesUnicode
+	bidSize := 8
+	if format == disk.FormatANSI {
+		maxSize = disk.MaxDataBlockSizeANSI
+		maxEntries = disk.MaxXBlockEntriesANSI
+		bidSize = 4
+	}
+
 	if len(data) <= maxSize {
 		t.mu.Unlock()
 		bid, err := t.WriteBlockData(data)
@@ -174,8 +183,8 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 		return bid, err
 	}
 
-	// Split data into chunks
 	var dataBlockBIDs []uint64
+	var dataBlockSizes []int
 	for offset := 0; offset < len(data); offset += maxSize {
 		end := offset + maxSize
 		if end > len(data) {
@@ -183,7 +192,6 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 		}
 		chunk := data[offset:end]
 
-		// Write chunk as separate block
 		t.mu.Unlock()
 		chunkBID, err := t.WriteBlockData(chunk)
 		t.mu.Lock()
@@ -191,38 +199,67 @@ func (t *WriteTransaction) WriteExtendedBlockData(data []byte) (util.BlockID, er
 			return 0, err
 		}
 		dataBlockBIDs = append(dataBlockBIDs, uint64(chunkBID))
+		dataBlockSizes = append(dataBlockSizes, len(chunk))
 	}
 
-	// Create XBLOCK pointing to data blocks
-	xblockBID := t.db.AllocateInternalBlockID()
-	xblockDiskSize := disk.CalculateBlockDiskSize(uint64(8+len(dataBlockBIDs)*8), t.db.Format())
-	xblockOffset, err := t.amap.Allocate(xblockDiskSize)
-	if err != nil {
-		return 0, err
+	queueExtended := func(level byte, bids []uint64, totalSize uint32) (util.BlockID, error) {
+		dataSize := 8 + len(bids)*bidSize
+		diskSize := disk.CalculateBlockDiskSize(uint64(dataSize), format)
+		bid := t.db.AllocateInternalBlockID()
+		offset, err := t.amap.Allocate(diskSize)
+		if err != nil {
+			return 0, fmt.Errorf("failed to allocate extended block: %w", err)
+		}
+
+		completeBlock, err := disk.BuildExtendedBlock(level, bids, totalSize, uint64(bid), offset, format)
+		if err != nil {
+			return 0, err
+		}
+		// pendingBlock stores the unaligned payload. Commit adds alignment and
+		// the block trailer exactly once.
+		payload := append([]byte(nil), completeBlock[:dataSize]...)
+		t.pendingBlocks = append(t.pendingBlocks, pendingBlock{
+			bid:    bid,
+			offset: offset,
+			data:   payload,
+			size:   uint16(dataSize), //nolint:gosec // bounded by MaxXBlockEntries
+		})
+		if err := t.btwriter.InsertBlock(&BlockInfo{
+			BID:      bid,
+			Location: offset,
+			Size:     uint16(dataSize), //nolint:gosec // bounded by MaxXBlockEntries
+			RefCount: 1,
+		}); err != nil {
+			return 0, err
+		}
+		return bid, nil
 	}
 
-	xblockData, err := disk.BuildExtendedBlock(1, dataBlockBIDs, uint32(len(data)), uint64(xblockBID), xblockOffset, t.db.Format()) //nolint:gosec // G115: len(data) bounded by caller
-	if err != nil {
-		return 0, err
+	var xblockBIDs []uint64
+	for start := 0; start < len(dataBlockBIDs); start += maxEntries {
+		end := start + maxEntries
+		if end > len(dataBlockBIDs) {
+			end = len(dataBlockBIDs)
+		}
+		groupSize := 0
+		for _, size := range dataBlockSizes[start:end] {
+			groupSize += size
+		}
+		xblockBID, err := queueExtended(1, dataBlockBIDs[start:end], uint32(groupSize)) //nolint:gosec // group size <= uint32 PST limit
+		if err != nil {
+			return 0, err
+		}
+		xblockBIDs = append(xblockBIDs, uint64(xblockBID))
 	}
 
-	t.pendingBlocks = append(t.pendingBlocks, pendingBlock{
-		bid:    xblockBID,
-		offset: xblockOffset,
-		data:   xblockData,
-		size:   uint16(len(xblockData)), //nolint:gosec // G115: xblock size bounded
-	})
-
-	if err := t.btwriter.InsertBlock(&BlockInfo{
-		BID:      xblockBID,
-		Location: xblockOffset,
-		Size:     uint16(8 + len(dataBlockBIDs)*8), //nolint:gosec // G115: xblock header size bounded
-		RefCount: 1,
-	}); err != nil {
-		return 0, err
+	if len(xblockBIDs) == 1 {
+		return util.BlockID(xblockBIDs[0]), nil
+	}
+	if len(xblockBIDs) > maxEntries {
+		return 0, fmt.Errorf("extended data requires too many XBLOCKs: %d (max %d)", len(xblockBIDs), maxEntries)
 	}
 
-	return xblockBID, nil
+	return queueExtended(2, xblockBIDs, uint32(len(data))) //nolint:gosec // len(data) checked against uint32 above
 }
 
 // AllocateNodeID reserves a new node ID for the requested node type.
